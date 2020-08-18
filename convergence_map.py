@@ -1,32 +1,40 @@
 import numpy as np
 import healpy as hp
 
+# number of sides to each healpix pixel
 nsides = 2048
 
+
+# take in healpix map which defaults to using the UNSEEN value to denote masked pixels and return
+# a masked map with NaNs instead
 def set_unseen_to_nan(map):
     map[np.where(map == hp.UNSEEN)[0]] = np.nan
-    return(map)
+    return map
 
+
+# convert a NaN scheme masked map back to the UNSEEN scheme for healpix manipulation
 def set_nan_to_unseen(map):
     map[np.isnan(map)] = hp.UNSEEN
-    return(map)
+    return map
 
+
+# convert UNSEEN scheme masked map to native numpy masked scheme
 def set_unseen_to_mask(map):
-    x = np.ma.masked_where(map==hp.UNSEEN, map)
+    x = np.ma.masked_where(map == hp.UNSEEN, map)
     x.fill_value = hp.UNSEEN
-    return(x)
+    return x
 
 
 # zeroes out alm amplitudes for less than a maximum l cutoff
 def zero_modes(almarr, l_cutoff):
     lmax = hp.Alm.getlmax(len(almarr))
-
     l, m = hp.Alm.getlm(lmax=lmax)
     idxs = np.where(l < l_cutoff)[0]
     almarr[idxs] = 0.0j
-    return(almarr)
+    return almarr
 
 
+# read in a klm fits lensing convergence map, zero l modes desired, and remove the mean field if desired
 def read_planck_map(remove_meanfield):
     # read in planck alm convergence data
     planck_lensing_alm = hp.read_alm('dat_klm.fits')
@@ -35,24 +43,25 @@ def read_planck_map(remove_meanfield):
     planck_lensing_map = hp.sphtfunc.alm2map(filtered_alm, nsides, lmax=4096)
     
     if remove_meanfield:
-        print(np.mean(planck_lensing_map))
+        #print('Removing mean field: <kappa> = ')
+        #print(np.mean(planck_lensing_map))
+        # read in mask
         mask = hp.read_map('mask.fits')
+        # apply mask, fill in masked values with UNSEEN
         masked_map = hp.ma(planck_lensing_map)
         masked_map.mask = np.logical_not(mask)
         masked_map = masked_map.filled()
+        # convert UNSEEN mask to NaN for mean subtraction
         masked_map = set_unseen_to_nan(masked_map)
         meanfield = np.nanmean(masked_map)
-        print(meanfield)
-        #masked_map = masked_map - meanfield
-        #masked_map = set_nan_to_unseen(masked_map)
+        masked_map = masked_map - meanfield
+        masked_map = set_nan_to_unseen(masked_map)
     
     # write out lensing convergence map
     hp.write_map('planck_map.fits', planck_lensing_map, overwrite=True)
 
 
-
-
-
+# mask map and remove the mean field if desired
 def mask_map(map, mask, remove_meanfield, outmap):
     # read in map and mask
     importmap = hp.read_map(map)
@@ -69,23 +78,7 @@ def mask_map(map, mask, remove_meanfield, outmap):
         masked_map = masked_map - meanfield
         masked_map = set_nan_to_unseen(masked_map)
 
-
     hp.write_map(outmap, masked_map, overwrite=True)
-
-
-def masked_smoothing(mapname, width, outname):
-    U = hp.read_map(mapname)
-    U = set_unseen_to_nan(U)
-    fwhm = width/60.*np.pi/180.
-    V=U.copy()
-    V[np.isnan(U)]=0
-    VV=hp.smoothing(V, fwhm=fwhm)
-    W=0*U.copy()+1
-    W[np.isnan(U)]=0
-    WW=hp.smoothing(W, fwhm=fwhm)
-    smoothed_map = VV/WW
-    smoothed_map[np.isnan(U)] = hp.UNSEEN
-    hp.write_map(outname, smoothed_map, overwrite=True)
 
 
 # smooth map with gaussian of fwhm = width arcminutes
@@ -97,6 +90,7 @@ def smooth_map(mapname, width, outname):
     hp.write_map(outname, smoothed_map, overwrite=True)
 
 
+# can change coordinates from ecliptic to equatorial for example, no longer needed
 def change_coord(mapname, coord, outname):
     """ Change coordinates of a HEALPIX map
         
