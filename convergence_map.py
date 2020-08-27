@@ -66,5 +66,3 @@ def mask_map(map, mask, outmap):
 
     hp.write_map(outmap, masked_map, overwrite=True)
 
-
-
