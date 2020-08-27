@@ -67,38 +67,4 @@ def mask_map(map, mask, outmap):
     hp.write_map(outmap, masked_map, overwrite=True)
 
 
-# can change coordinates from ecliptic to equatorial for example, no longer needed
-def change_coord(mapname, coord, outname):
-    """ Change coordinates of a HEALPIX map
-        
-        Parameters
-        ----------
-        m : map or array of maps
-        map(s) to be rotated
-        coord : sequence of two character
-        First character is the coordinate system of m, second character
-        is the coordinate system of the output map. As in HEALPIX, allowed
-        coordinate systems are 'G' (galactic), 'E' (ecliptic) or 'C' (equatorial)"""
-    m = hp.read_map(mapname)
-    # Basic HEALPix parameters
-    npix = m.shape[-1]
-    nside = hp.npix2nside(npix)
-    ang = hp.pix2ang(nside, np.arange(npix))
-    
-    # Select the coordinate transformation
-    rot = hp.Rotator(coord=reversed(coord))
-    
-    # Convert the coordinates
-    new_ang = rot(*ang)
-    new_pix = hp.ang2pix(nside, *new_ang)
-    
-    hp.write_map(outname, m[..., new_pix], overwrite=True)
-
-
-def lamb_map(mapname, reso):
-    importmap = hp.read_map(mapname, dtype=np.single)
-    lambert = (hp.azeqview(importmap, xsize=12000, ysize=12000, reso=reso, lamb=True, return_projected_map=True)).filled()
-    lambert[np.where(lambert == -np.inf)] = hp.UNSEEN
-
-    lambert.astype(np.single).dump('lambert_planck.npy')
 
