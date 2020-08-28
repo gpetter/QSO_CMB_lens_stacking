@@ -12,16 +12,17 @@ from photutils import aperture_photometry
 from colossus.cosmology import cosmology
 from colossus.halo import concentration
 from colossus.halo import profile_nfw
-from colossus.lss import peaks
 from colossus.lss import bias
 from scipy.special import j0
 from scipy.ndimage import gaussian_filter
+import glob
 
 colcosmo = cosmology.setCosmology('planck18')
 
-sdss_quasar_cat = (fits.open('DR14Q_v4_4.fits'))[1].data
+sdss_quasar_cat = (fits.open('QSO_cats/DR14Q_v4_4.fits'))[1].data
 
-good_idxs = np.where((sdss_quasar_cat['Z'] <= 2.2) & (sdss_quasar_cat['Z'] >= 0.9) & (sdss_quasar_cat['FIRST_MATCHED']==0) & (sdss_quasar_cat['MI'] <= -24))[0]
+good_idxs = np.where((sdss_quasar_cat['Z'] <= 2.2) & (sdss_quasar_cat['Z'] >= 0.9) &
+                     (sdss_quasar_cat['FIRST_MATCHED']==0) & (sdss_quasar_cat['MI'] <= -24))
 zs = sdss_quasar_cat['Z'][good_idxs]
 
 
@@ -35,10 +36,14 @@ hist = np.histogram(zs, 100, density=True)
 
 
 def Sigma_crit(z):
-    return (((const.c)**2)/(4.*np.pi*const.G)*(cosmo.angular_diameter_distance(1100.)/((cosmo.angular_diameter_distance(z)*cosmo.angular_diameter_distance_z1z2(z, 1100.))))).decompose().to(u.solMass*u.littleh/(u.kpc)**2, u.with_H0(cosmo.H0))
+    return (((const.c) ** 2) / (4. * np.pi * const.G) * (cosmo.angular_diameter_distance(1100.) / (
+    (cosmo.angular_diameter_distance(z) * cosmo.angular_diameter_distance_z1z2(z, 1100.))))).decompose().to(
+        u.solMass * u.littleh / (u.kpc) ** 2, u.with_H0(cosmo.H0))
+
 
 def mass_to_solmass_per_h(M):
     return M.to(u.solMass/u.littleh, u.with_H0(cosmo.H0))
+
 
 def calc_concentration(M_200, z):
     M_200_per_h = mass_to_solmass_per_h(M_200)
@@ -79,11 +84,11 @@ def two_halo_term(theta, M_200, z):
     
     ltheta = np.outer(theta, ls)
 
-    
     mps = (colcosmo.matterPowerSpectrum(ks.value, z=z)*(u.Mpc/u.littleh)**3).to((u.kpc/u.littleh)**3)
     integrand = a*ls*j0(ltheta)*mps
     integral = np.trapz(integrand, x=ls)
-    return(integral)
+    return integral
+
 
 def int_kappa(theta, M_200, terms):
     
@@ -111,8 +116,8 @@ def int_kappa(theta, M_200, terms):
 
 
 
-one_halo_model = int_kappa(theta_list, 6E12*u.solMass, 'one')
-one_halo_model.dump('one_term.npy')
+# one_halo_model = int_kappa(theta_list, 6E12*u.solMass, 'one')
+# one_halo_model.dump('one_term.npy')
 
 """two_model = int_kappa(theta_list, 6E12*u.solMass, 'two')
 two_model.dump('two_term.npy')
@@ -122,23 +127,50 @@ bothsmoothed = gaussian_filter(bothmodel, sigma=15.)
 bothsmoothed.dump('both_terms.npy')"""
 
 
-
-def measure_profile(image, step):
-    profile = []
+# measure the radial convergence profile from the stacked map
+def measure_profile(image, step, errors):
+    profile, profile_unc = [], []
     center = int(len(image)/2. - 1)
     reso = 1.2  # arcmin/pixel
     steppix = step/reso
+    noisestacknames = glob.glob('noise_stacks/*.npy')
+
     inner_aper = CircularAperture([center, center], steppix)
     profile.append(float(aperture_photometry(image, inner_aper)['aperture_sum']/inner_aper.area))
+    if errors:
+        realizations = []
+        for name in noisestacknames:
+            kap_noise = np.load(name, allow_pickle=True)
+            noisy_img = image + kap_noise
+            realizations.append(float(aperture_photometry(noisy_img, inner_aper)['aperture_sum'] / inner_aper.area))
+        profile_unc.append(np.std(np.array(realizations)))
+
     i = 1
-    while step*(i+1) < 180.:
-        new_aper = CircularAnnulus([center, center], steppix*(i), steppix*(i+1))
+    while step*i < 180.:
+        new_aper = CircularAnnulus([center, center], steppix*i, steppix*(i+1))
         profile.append(float(aperture_photometry(image, new_aper)['aperture_sum']/new_aper.area))
+
+        if errors:
+            realizations = []
+            for name in noisestacknames:
+                kap_noise = np.load(name, allow_pickle=True)
+                noisy_img = image+kap_noise
+                realizations.append(float(aperture_photometry(noisy_img, new_aper)['aperture_sum']/new_aper.area))
+
+            profile_unc.append(np.std(np.array(realizations)))
+
         i += 1
-    return(profile)
 
-kap = np.load('stacked_1.npy', allow_pickle=True)
+    if errors:
+        return profile, profile_unc
+    else:
+        return profile
 
-meas = np.array(measure_profile(kap, 10.))
 
-meas.dump('measured.npy')
+kap = np.load('stacks/stacked.npy', allow_pickle=True)
+
+meas = np.array(measure_profile(kap, 12., True))
+
+meas[0].dump('profiles/measured.npy')
+
+meas[1].dump('profiles/errors.npy')
