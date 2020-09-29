@@ -1,8 +1,9 @@
 import numpy as np
 import healpy as hp
+import pandas as pd
 
 # number of sides to each healpix pixel
-nsides = 2048
+#nsides = 2048
 
 
 # take in healpix map which defaults to using the UNSEEN value to denote masked pixels and return
@@ -34,14 +35,30 @@ def zero_modes(almarr, l_cutoff):
     return almarr
 
 
+def wiener_filter(almarr):
+    lmax = hp.Alm.getlmax(len(almarr))
+    l, m = hp.Alm.getlm(lmax=lmax)
+
+    noise_table = pd.read_csv('maps/nlkk.dat', delim_whitespace=True, header=None)
+    cl_plus_nl = np.array(noise_table[2])
+    nl = np.array(noise_table[1])
+    cl = cl_plus_nl - nl
+
+    wien_factor = cl/cl_plus_nl
+
+    for l_mode in range(len(wien_factor)):
+        idxs = np.where(l == l_mode)
+        almarr[idxs] *= wien_factor[l_mode]
+    return almarr
+
+
 # read in a klm fits lensing convergence map, zero l modes desired, write out map
-def klm_2_map(klmname, mapname):
+def klm_2_map(klmname, mapname, nsides):
     # read in planck alm convergence data
     planck_lensing_alm = hp.read_alm(klmname)
     filtered_alm = zero_modes(planck_lensing_alm, 100)
     # generate map from alm data
     planck_lensing_map = hp.sphtfunc.alm2map(filtered_alm, nsides, lmax=4096)
-    # write out lensing convergence map
     hp.write_map(mapname, planck_lensing_map, overwrite=True)
 
 
@@ -65,4 +82,38 @@ def mask_map(map, mask, outmap):
     masked_map = masked_map.filled()
 
     hp.write_map(outmap, masked_map, overwrite=True)
+
+
+# input klm file and output final smoothed, masked map for analysis
+def klm_2_product(klmname, width, maskname, nsides, lmin, writename):
+
+    # read in planck alm convergence data
+    planck_lensing_alm = hp.read_alm(klmname)
+    lmax = hp.Alm.getlmax(len(planck_lensing_alm))
+
+    # if you want to smooth with a gaussian
+    if width > 0:
+        # transform a gaussian of FWHM=width in real space to harmonic space
+        k_space_gauss_beam = hp.gauss_beam(fwhm=width.to('radian').value, lmax=lmax)
+        # if truncating small l modes
+        if lmin > 0:
+            # zero out small l modes in k-space filter
+            k_space_gauss_beam[:lmin] = 0
+        # smooth in harmonic space
+        filtered_alm = hp.smoothalm(planck_lensing_alm, beam_window=k_space_gauss_beam)
+    else:
+        # if not smoothing with gaussian, just remove small l modes
+        filtered_alm = zero_modes(planck_lensing_alm, lmin)
+
+    planck_lensing_map = hp.sphtfunc.alm2map(filtered_alm, nsides, lmax=lmax)
+
+    # mask map
+    importmask = hp.read_map(maskname).astype(np.bool)
+    # set mask, invert
+    smoothed_masked_map = hp.ma(planck_lensing_map)
+    smoothed_masked_map.mask = np.logical_not(importmask)
+
+    hp.write_map('%s.fits' % writename, smoothed_masked_map.filled(), overwrite=True, dtype=np.single)
+
+    return smoothed_masked_map.filled()
 
