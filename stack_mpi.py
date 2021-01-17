@@ -11,6 +11,8 @@ from functools import partial
 from astropy.coordinates import SkyCoord
 from math import ceil
 from astropy import units as u
+import convergence_map
+
 
 
 # convert ras, decs to ls, bs
@@ -32,27 +34,45 @@ def newvec2pix(x, y, z):
 	return hp.vec2pix(nside=2048, x=x, y=y, z=z)
 
 
-# sub stacking routine which worker will execute
-def stack_chunk(chunksize, nstack, lon, lat, inmap, weighting, k):
+# for parallelization of stacking procedure, this method will stack a "chunk" of the total stack
+def stack_chunk(chunksize, nstack, lon, lat, inmap, weighting, prob_weights, imsize, reso, k):
 	kappa = []
+	weightsum = np.zeros((imsize, imsize))
+	# if this is the last chunk in the stack, the number of sources in the chunk probably won't be = chunksize
 	if (k*chunksize)+chunksize > nstack:
 		stepsize = nstack % chunksize
 	else:
 		stepsize = chunksize
 
-	weights = weighting[(k*chunksize):((k*chunksize)+stepsize)]
-	for l in range(k*chunksize, (k*chunksize)+stepsize):
-		azproj = hp.projector.AzimuthalProj(rot=[lon[l], lat[l]], xsize=300, reso=1.2, lamb=True)
-		kappa.append(set_unseen_to_nan(azproj.projmap(inmap, vec2pix_func=newvec2pix)))
-	masked_kappa = np.ma.MaskedArray(np.array(kappa), mask=np.isnan(np.array(kappa)))
+	masked_fraction = []
 
-	return np.ma.average(masked_kappa, axis=0, weights=np.array(weights))
+	for l in range(k*chunksize, (k*chunksize)+stepsize):
+		azproj = hp.projector.AzimuthalProj(rot=[lon[l], lat[l]], xsize=imsize, reso=reso, lamb=True)
+		nanned_map = convergence_map.set_unseen_to_nan(azproj.projmap(inmap, vec2pix_func=newvec2pix))
+		masked_fraction.append(np.count_nonzero(~np.isnan(nanned_map))/nanned_map.size)
+
+		wmat = np.ones((imsize, imsize)) * weighting[l]
+		wmat[np.isnan(nanned_map)] = 0
+		nanned_map[np.isnan(nanned_map)] = 0
+
+		if prob_weights is not None:
+			wmat_for_sum = wmat * prob_weights[l]
+		else:
+			wmat_for_sum = wmat
+
+		kappa.append(wmat * nanned_map)
+		weightsum += wmat_for_sum
+
+	return (np.sum(np.array(kappa), axis=0)/weightsum, np.mean(masked_fraction))
 
 
 # stacks many projections by breaking up list into chunks and processing each chunk in parallel
-def stack_mp(stackmap, nstack, outname, ras, decs, weighting, pool):
-	# size of chunks to stack in. Good size is near the square root of the total number of stacks
-	chunksize = 1000
+def stack_mp(stackmap, ras, decs, pool, weighting=None, prob_weights=None, nstack=None, outname=None, imsize=240, chunksize=500, reso=1.5):
+	if weighting is None:
+		weighting = np.ones(len(ras))
+	if nstack is None:
+		nstack = len(ras)
+
 	# the number of chunks is the number of stacks divided by the chunk size rounded up to the nearest integer
 	nchunks = ceil(nstack/chunksize)
 
@@ -62,24 +82,23 @@ def stack_mp(stackmap, nstack, outname, ras, decs, weighting, pool):
 
 	# fill in all arguments to stack_chunk function but the index,
 	# Pool.map() requires function to only take one paramter
-	stack_chunk_partial = partial(stack_chunk, chunksize, nstack, lons, lats, stackmap, weighting)
+	stack_chunk_partial = partial(stack_chunk, chunksize, nstack, lons, lats, stackmap, weighting, prob_weights, imsize, reso)
 	# do the stacking in chunks, map the stacks to different cores for parallel processing
 	# use mpi processing for cluster or multiprocessing for personal computer
 
-	chunks = list(pool.map(stack_chunk_partial, range(nchunks)))
+	chunks, chunkweights = zip(*pool.map(stack_chunk_partial, range(nchunks)))
+	chunkweights = np.array(chunkweights)
 
-	# mask any pixels in any of the chunks which are NaN, as np.average can't handle NaNs
-	masked_chunks = np.ma.MaskedArray(chunks, mask=np.isnan(chunks))
-	# set weights for all chunks except possibly the last to be 1
-	chunkweights = np.ones(nchunks)
+
 	if nstack % chunksize > 0:
-		chunkweights[len(chunkweights)-1] = float(nstack % chunksize) / chunksize
+		chunkweights[len(chunkweights)-1] *= float(nstack % chunksize) / chunksize
+
+	weightedchunks = np.prod(np.array([chunkweights, chunks], dtype=np.object), axis=0)
 	# stack the chunks, weighting by the number of stacks in each chunk
-	finalstack = np.ma.average(masked_chunks, axis=0, weights=chunkweights)
+	finalstack = np.sum(weightedchunks, axis=0) / np.sum(chunkweights)
 
 	finalstack.dump('%s.npy' % outname)
 	print(time.time()-starttime)
-
 
 
 if __name__ == "__main__":
@@ -96,29 +115,26 @@ if __name__ == "__main__":
 		pool.wait()
 		sys.exit(0)
 
-	sample_name = 'xdqso'
+	sample_name = 'xdqso_specz'
+	color = 'red'
+	imsize = 240
+	reso = 1.5
 	stack_maps = True
-	stack_noise = False
+	stack_noise = True
 
-	if sample_name == 'xdqso':
+	cat = fits.open('QSO_cats/%s_%s.fits' % (sample_name, color))[1].data
+	if (sample_name == 'xdqso') or (sample_name == 'xdqso_specz'):
 		rakey, deckey = 'RA_XDQSO', 'DEC_XDQSO'
+		probs = cat['PQSO']
 	else:
 		rakey, deckey = 'RA', 'DEC'
-
-	bluecat = fits.open('QSO_cats/%s_blue.fits' % sample_name)[1].data
-	blueras, bluedecs = bluecat[rakey], bluecat[deckey]
-
-	ctrlcat = fits.open('QSO_cats/%s_ctrl.fits' % sample_name)[1].data
-	ctrlras, ctrldecs = ctrlcat[rakey], ctrlcat[deckey]
-
-	redcat = fits.open('QSO_cats/%s_red.fits' % sample_name)[1].data
-	redras, reddecs = redcat[rakey], redcat[deckey]
+		probs = np.ones(len(cat))
+	ras, decs = cat[rakey], cat[deckey]
 
 	if stack_maps:
 		planck_map = hp.read_map('maps/smoothed_masked_planck.fits', dtype=np.single)
-		stack_mp(planck_map, len(blueras), 'stacks/%s_blue_stack' % sample_name, blueras, bluedecs, bluecat['weight'], pool)
-		stack_mp(planck_map, len(ctrlras), 'stacks/%s_ctrl_stack' % sample_name, ctrlras, ctrldecs, ctrlcat['weight'], pool)
-		stack_mp(planck_map, len(redras), 'stacks/%s_red_stack' % sample_name, redras, reddecs, redcat['weight'], pool)
+		stack_mp(planck_map, ras, decs, pool, weighting=cat['weight'], prob_weights=probs, outname=('stacks/%s_%s_stack' % (sample_name, color)), imsize=imsize, reso=reso)
+
 		if not stack_noise:
 			pool.close()
 
@@ -126,7 +142,6 @@ if __name__ == "__main__":
 		noisemaplist = glob.glob('noisemaps/maps/*.fits')
 		for j in range(len(noisemaplist)):
 			noisemap = hp.read_map('noisemaps/maps/%s.fits' % j, dtype=np.single)
-			stack_mp(noisemap, len(blueras), 'noise_stacks/%s_blue' % j, blueras, bluedecs, bluecat['weight'], pool)
-			stack_mp(noisemap, len(ctrlras), 'noise_stacks/%s_ctrl' % j, ctrlras, ctrldecs, ctrlcat['weight'], pool)
-			stack_mp(noisemap, len(redras), 'noise_stacks/%s_red' % j, redras, reddecs, redcat['weight'], pool)
+			stack_mp(noisemap, ras, decs, pool, weighting=cat['weight'], prob_weights=probs, outname='noise_stacks/%s_%s' % (j, color), imsize=imsize, reso=reso)
+
 	pool.close()

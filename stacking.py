@@ -5,128 +5,294 @@ from astropy.io import fits
 import importlib
 from astropy import units as u
 from astropy.coordinates import SkyCoord
-import gc
+import glob
+import fileinput
+import sys
 import time
 from math import ceil
 import multiprocessing as mp
 from functools import partial
+from astropy.table import Table
+
+from astropy import coordinates
+import urllib3
+import glob
+urllib3.disable_warnings()
+
 importlib.reload(convergence_map)
 
-sdss_quasar_cat = (fits.open('DR14Q_v4_4.fits'))[1].data
 
-# select sample to match Geach+19
-good_idxs = np.where((sdss_quasar_cat['Z'] <= 2.2) & (sdss_quasar_cat['Z'] >= 0.9) &
-                     (sdss_quasar_cat['FIRST_MATCHED'] == 0) & (sdss_quasar_cat['MI'] <= -24))
-ras = sdss_quasar_cat['RA'][good_idxs]
-decs = sdss_quasar_cat['DEC'][good_idxs]
-
-
+# convert ras and decs to galactic l, b coordinates
 def equatorial_to_galactic(ra, dec):
-    ra_decs = SkyCoord(ra, dec, unit='deg')
-    ls = np.array(ra_decs.galactic.l.radian*u.rad.to('deg'))
-    bs = np.array(ra_decs.galactic.b.radian*u.rad.to('deg'))
-    return ls, bs
+	ra_decs = SkyCoord(ra, dec, unit='deg', frame='icrs')
+	ls = np.array(ra_decs.galactic.l.radian * u.rad.to('deg'))
+	bs = np.array(ra_decs.galactic.b.radian * u.rad.to('deg'))
+	return ls, bs
 
 
-# stacks convergence map by making cutouts of a global lambert projection
-def stack_lamb(mapname, boxdim, boxpix, ralist, declist, outname, galactic):
-    # set resolution of pixels to stack
-    # boxdim is in degrees, while resolution is expected in arcmins, multiply by 60
-    # divide field width in arcmins by the number of pixels desired
-    reso = boxdim * 60. / boxpix
-
-    #convergence_map.lamb_map('smoothed_masked_planck.fits', reso)
-
-    # read in map
-    conv_map = np.load(mapname, allow_pickle=True)
-
-    # set masked pixels to nan so they are ignored in stacking
-    conv_map = convergence_map.set_unseen_to_nan(conv_map)
-
-    # transform from (ra,dec) of quasars to (l,b) if planck map is left in galactic coords
-    if galactic:
-        lon, lat = equatorial_to_galactic(ralist, declist)
-    else:
-        lon, lat = ralist, declist
-
-    # convert between galactic longitude and latitude to pixel coordinates in Lambert projection map
-    lambproj = hp.projector.AzimuthalProj(xsize=12000, ysize=12000, reso=reso, lamb=True)
-    i, j = lambproj.xy2ij(lambproj.ang2xy(lon, lat, lonlat=True))
-
-    # half the number of pixels in image
-    half_length = int(boxpix/2. - 0.5)
-
-    # make first cutout
-    avg_kappa = conv_map[i[0]-half_length:i[0]+half_length+1, j[0]-half_length:j[0]+half_length+1]
-
-    starttime = time.time()
-    for k in range(1, 1000):
-        if k % 10000 == 0:
-            print(k)
-            print(time.time() - starttime)
-        new_kappa = conv_map[i[k]-half_length:i[k]+half_length+1, j[k]-half_length:j[k]+half_length+1]
-        lastavg = k / (k + 1) * avg_kappa
-        newterm = new_kappa / (k + 1)
-        stacked = np.dstack((lastavg, newterm))
-        avg_kappa[:] = np.nansum(stacked, 2)
-
-        gc.collect()
-    print(time.time() - starttime)
-    avg_kappa.dump(outname)
-    print(avg_kappa)
-
-
-ls, bs = equatorial_to_galactic(ras, decs)
+# given list of ras, decs, return indices of sources whose centers lie outside the masked region of the lensing map
+def get_qsos_outside_mask(nsides, themap, ras, decs):
+	ls, bs = equatorial_to_galactic(ras, decs)
+	pixels = hp.ang2pix(nsides, ls, bs, lonlat=True)
+	idxs = np.where(themap[pixels] != hp.UNSEEN)
+	return idxs
 
 
 # AzimuthalProj.projmap requires a vec2pix function for some reason, so define one where the nsides are fixed
 def newvec2pix(x, y, z):
-    return hp.vec2pix(nside=2048, x=x, y=y, z=z)
+	return hp.vec2pix(nside=2048, x=x, y=y, z=z)
 
 
-# for parallelization, stack lots of chunks
-def stack_chunk(chunksize, nstack, lon, lat, inmap, k):
-    kappa = []
-    if (k*chunksize)+chunksize > nstack:
-        stepsize = nstack % chunksize
-    else:
-        stepsize = chunksize
-    for l in range(k*chunksize, (k*chunksize)+stepsize):
-        azproj = hp.projector.AzimuthalProj(rot=[lon[l], lat[l]], xsize=250, reso=1.2, lamb=True)
-        kappa.append(convergence_map.set_unseen_to_nan(azproj.projmap(inmap, vec2pix_func=newvec2pix)))
-        # kappa.append(conv_map[i[l] - half_length:i[l] + half_length + 1, j[l] - half_length:j[l] + half_length + 1])
+# perform one iteration of a stack
+def stack_iteration(current_sum, current_weightsum, new_cutout, weight, prob_weight, imsize):
+	# create an image filled with the value of the weight, set weights to zero where the true map is masked
+	wmat = np.full((imsize, imsize), weight)
+	wmat[np.isnan(new_cutout)] = 0
+	# the weights for summing in the denominator are multiplied by the probabilty weight to account
+	# for the fact that some sources aren't quasars and contribute no signal to the stack
+	wmat_for_sum = wmat * prob_weight
+	# the running total sum is the sum from last iteration plus the new cutout
+	new_sum = np.nansum([current_sum, new_cutout], axis=0)
+	new_weightsum = np.sum([current_weightsum, wmat_for_sum], axis=0)
 
-    return np.nanmean(np.array(kappa), axis=0)
+	return new_sum, new_weightsum
+
+def find_closest_cutout(l, b, fixedls, fixedbs):
+	return np.argmin(hp.rotator.angdist([fixedls, fixedbs], [l, b], lonlat=True))
 
 
-# stack the convergence map in the lambert projection at the positions of quasars using parallel processing
-def stack_mp(mapname, nstack, lons=ls, lats=bs):
-    inmap = hp.read_map(mapname, dtype=np.single)
-    # size of chunks to stack in. Good size is near the square root of the total number of stacks
-    chunksize = 500
-    # the number of chunks is the number of stacks divided by the chunk size rounded up to the nearest integer
-    nchunks = ceil(nstack/chunksize)
 
-    starttime = time.time()
-    # initalize multiprocessing pool with one less core than is available for stability
-    p = mp.Pool(processes=mp.cpu_count()-1)
-    # fill in all arguments to stack_chunk function but the index,
-    # Pool.map() requires function to only take one paramter
-    stack_chunk_partial = partial(stack_chunk, chunksize, nstack, lons, lats, inmap)
-    # do the stacking in chunks, map the stacks to different cores for parallel processing
-    chunks = p.map(stack_chunk_partial, range(nchunks))
-    # mask any pixels in any of the chunks which are NaN, as np.average can't handle NaNs
-    masked_chunks = np.ma.MaskedArray(chunks, mask=np.isnan(chunks))
-    # set weights for all chunks except possibly the last to be 1
-    weights = np.ones(nchunks)
-    if nstack % chunksize > 0:
-        weights[len(weights)-1] = float(nstack % chunksize) / chunksize
-    # stack the chunks, weighting by the number of stacks in each chunk
-    finalstack = np.ma.average(masked_chunks, axis=0, weights=weights)
-    p.close()
-    p.join()
-    finalstack.dump('mp_test1.npy')
-    print(time.time()-starttime)
 
+def stack_cutouts(ras, decs, weights, prob_weights, imsize, nstack, outname=None):
+	# read in previously calculated projections covering large swaths of sky
+	projectionlist = glob.glob('planckprojections/*')
+	projections = np.array([np.load(filename, allow_pickle=True) for filename in projectionlist])
+	# center longitudes/latitudes of projections
+	projlons = [int(filename.split('/')[1].split('.')[0].split('_')[0]) for filename in projectionlist]
+	projlats = [int(filename.split('/')[1].split('.')[0].split('_')[1]) for filename in projectionlist]
+	# healpy projection objects used to create the projections
+	# contains methods to convert from angular position of quasar to i,j position in projection
+	projector_objects = [hp.projector.AzimuthalProj(rot=[projlons[i], projlats[i]], xsize=5000, reso=1.5, lamb=True) for i in range(len(projlons))]
+	# convert ras and decs to galactic ls, bs
+	lon, lat = equatorial_to_galactic(ras, decs)
+
+	running_sum, weightsum = np.zeros((imsize, imsize)), np.zeros((imsize, imsize))
+	# for each source
+	for k in range(nstack):
+		# choose the projection closest to the QSO's position
+		cutoutidx = find_closest_cutout(lon[k], lat[k], projlons, projlats)
+		cutout_to_use = projections[cutoutidx]
+		projobj = projector_objects[cutoutidx]
+		# find the i,j coordinates in the projection corresponding to angular positon in sky
+		i, j = projobj.xy2ij(projobj.ang2xy(lon[k], lat[k], lonlat=True))
+		# make cutout
+		cut_at_position = cutout_to_use[int(i-imsize/2):int(i+imsize/2), int(j-imsize/2):int(j+imsize/2)]
+		# stack
+		running_sum, weightsum = stack_iteration(running_sum, weightsum, cut_at_position, weights[j], prob_weights[j], imsize)
+	finalstack = running_sum/weightsum
+	if outname is not None:
+		finalstack.dump('%s.npy' % outname)
+
+	return finalstack
+
+
+def sum_projections(lon, lat, weights, prob_weights, imsize, reso, inmap, nstack):
+	running_sum, weightsum = np.zeros((imsize, imsize)), np.zeros((imsize, imsize))
+	for j in range(nstack):
+		azproj = hp.projector.AzimuthalProj(rot=[lon[j], lat[j]], xsize=imsize, reso=reso, lamb=True)
+		new_im = weights[j] * convergence_map.set_unseen_to_nan(azproj.projmap(inmap, vec2pix_func=newvec2pix))
+
+		running_sum, weightsum = stack_iteration(running_sum, weightsum, new_im, weights[j], prob_weights[j], imsize)
+
+	return running_sum, weightsum
+
+
+
+
+# for parallelization of stacking procedure, this method will stack a "chunk" of the total stack
+def stack_chunk(chunksize, nstack, lon, lat, inmap, weighting, prob_weights, imsize, reso, k):
+	# if this is the last chunk in the stack, the number of sources in the chunk probably won't be = chunksize
+	if (k * chunksize) + chunksize > nstack:
+		stepsize = nstack % chunksize
+	else:
+		stepsize = chunksize
+	highidx, lowidx = ((k * chunksize) + stepsize), (k * chunksize)
+
+	totsum, weightsum = sum_projections(lon[lowidx:highidx], lat[lowidx:highidx], weighting[lowidx:highidx], prob_weights[lowidx:highidx], imsize, reso, inmap, stepsize)
+
+	return totsum, weightsum
+
+
+# stack by computing an average iteratively. this method uses little memory but cannot be parallelized
+def stack_projections(ras, decs, weights=None, prob_weights=None, imsize=240, outname=None, reso=1.5, inmap=None, nstack=None, mode='normal', chunksize=500):
+	# if no weights provided, weights set to one
+	if weights is None:
+		weights = np.ones(len(ras))
+	if prob_weights is None:
+		prob_weights = np.ones(len(ras))
+	# if no limit to number of stacks provided, stack the entire set
+	if nstack is None:
+		nstack = len(ras)
+
+	lons, lats = equatorial_to_galactic(ras, decs)
+
+	if mode == 'normal':
+		totsum, weightsum = sum_projections(lons, lats, weights, prob_weights, imsize, reso, inmap, nstack)
+		finalstack = totsum/weightsum
+	elif mode == 'mp':
+		# the number of chunks is the number of stacks divided by the chunk size rounded up to the nearest integer
+		nchunks = ceil(nstack / chunksize)
+
+		# initalize multiprocessing pool with one less core than is available for stability
+		p = mp.Pool(mp.cpu_count() - 1)
+		# fill in all arguments to stack_chunk function but the index,
+		# Pool.map() requires function to only take one paramter
+		stack_chunk_partial = partial(stack_chunk, chunksize, nstack, lons, lats, inmap, weights, prob_weights,
+		                              imsize, reso)
+		# do the stacking in chunks, map the stacks to different cores for parallel processing
+		chunksum, chunkweightsum = zip(*p.map(stack_chunk_partial, range(nchunks)))
+
+		totsum = np.sum(chunksum, axis=0)
+		weightsum = np.sum(chunkweightsum, axis=0)
+		finalstack = totsum / weightsum
+
+		p.close()
+		p.join()
+	else:
+		return
+
+	if outname is not None:
+		finalstack.dump('%s.npy' % outname)
+
+	return finalstack
+
+
+"""# stack at random positions by randomly shifting the ras by 2 to 15 degrees
+def stack_random_positions(stackmap, outname, ras, decs, weighting):
+	shifts = np.random.uniform(2., 14., len(ras))
+	shifted_ras = ras + shifts
+	stack_mp(stackmap, shifted_ras, decs, outname=outname, weighting=weighting)"""
+
+
+def fast_stack(ras, decs, inmap, weights=None, prob_weights=None, nsides=2048, iterations=500):
+	if weights is None:
+		weights = np.ones(len(ras))
+
+	outerkappa = []
+	lons, lats = equatorial_to_galactic(ras, decs)
+	inmap = convergence_map.set_unseen_to_nan(inmap)
+	centerkappa = inmap[hp.ang2pix(nsides, lons, lats, lonlat=True)]
+	weights[np.isnan(centerkappa)] = 0
+	centerkappa[np.isnan(centerkappa)] = 0
+
+
+	if prob_weights is not None:
+		true_weights_for_sum = weights * np.array(prob_weights)
+		weightsum = np.sum(true_weights_for_sum)
+	else:
+		weightsum = np.sum(weights)
+
+	centerstack = np.sum(weights * centerkappa) / weightsum
+
+	if iterations > 0:
+		for x in range(iterations):
+			outerkappa.append(np.nanmean(inmap[hp.ang2pix(nsides, (lons + np.random.uniform(2., 14.)), lats, lonlat=True)]))
+		return centerstack, np.nanstd(outerkappa)
+	else:
+		return centerstack
+
+
+# if running on local machine, can use this to stack using multiprocessing.
+# Otherwise use stack_mpi.py to perform stack on a cluster computer
+def stack_suite(color, sample_name, stack_map, stack_noise, reso=1.5, imsize=240, nsides=2048, mode='mp', nstack=None):
+	planck_map = hp.read_map('maps/smoothed_masked_planck.fits', dtype=np.single)
+
+	cat = fits.open('QSO_cats/%s_%s.fits' % (sample_name, color))[1].data
+	if (sample_name == 'xdqso') or (sample_name == 'xdqso_specz'):
+		rakey, deckey = 'RA_XDQSO', 'DEC_XDQSO'
+		probs = cat['PQSO']
+	else:
+		rakey, deckey = 'RA', 'DEC'
+		probs = np.ones(len(cat))
+	ras, decs = cat[rakey], cat[deckey]
+
+	if nstack is None:
+		nstack = len(ras)
+
+	if (color == 'complete') or (color == 'RL'):
+		weights = np.ones(len(cat))
+	else:
+		weights = cat['weight']
+
+	outname = 'stacks/%s_%s_stack' % (sample_name, color)
+
+	if mode == 'fast':
+		return fast_stack(ras, decs, planck_map, weights=weights, prob_weights=probs, nsides=nsides)
+	elif mode == 'cutout':
+		stack_cutouts(ras, decs, weights, probs, imsize, nstack, outname)
+	elif mode == 'mpi':
+		for line in fileinput.input(['stack_mpi.py'], inplace=True):
+			if line.strip().startswith('sample_name = '):
+				line = "\tsample_name = '%s'\n" % sample_name
+			if line.strip().startswith('color = '):
+				line = "\tcolor = '%s'\n" % color
+			if line.strip().startswith('imsize = '):
+				line = '\timsize = %s\n' % imsize
+			if line.strip().startswith('reso = '):
+				line = '\treso = %s\n' % reso
+			if line.strip().startswith('stack_maps = '):
+				line = '\tstack_maps = %s\n' % stack_map
+			if line.strip().startswith('stack_noise = '):
+				line = '\tstack_noise = %s\n' % stack_noise
+			sys.stdout.write(line)
+	else:
+		if stack_map:
+			stack_projections(ras, decs, weights=weights, prob_weights=probs, inmap=planck_map, mode=mode,
+			         outname=outname, reso=reso, imsize=imsize, nstack=nstack)
+
+		if stack_noise:
+			noisemaplist = glob.glob('noisemaps/maps/*.fits')
+			for j in range(0, len(noisemaplist)):
+				noisemap = hp.read_map('noisemaps/maps/%s.fits' % j)
+				stack_projections(ras, decs, weights=weights, prob_weights=probs, inmap=noisemap, mode=mode,
+				         outname='noise_stacks/%s_%s' % (j, color), reso=reso, imsize=imsize, nstack=nstack)
+
+
+"""def find_differences():
+	cat = fits.open('catalogs/derived/xdqso_specz_complete.fits')[1].data
+	ras = cat['RA_XDQSO']
+	decs = cat['DEC_XDQSO']
+	zs = cat['PEAKZ']
+	parentzdist = np.histogram(zs, bins=20, range=(0.5, 2.5), density=True)[0]
+	planckmap = hp.read_map('maps/smoothed_masked_planck.fits', dtype=np.single)
+
+	stacks = []
+	bestidxs = []
+	for j in range(1000):
+		randidxs1 = np.random.choice(a=len(ras), size=int(len(ras)/5), replace=False)
+		newras1, newdecs1, newzs1 = ras[randidxs1], decs[randidxs1], zs[randidxs1]
+		#randidxs2 = np.random.Generator.choice(a=len(ras), size=int(len(ras) / 8), replace=False)
+		#newras2, newdecs2, newzs2 = ras[randidxs2], decs[randidxs2], zs[randidxs2]
+		zdist1 = np.histogram(newzs1, bins=20, range=(0.5, 2.5), density=True)[0]
+		#zdist2 = np.histogram(newzs2, bins=20, range=(0.5, 2.5), density=True)[0]
+		#zdistratio = zdist1/zdist2
+		zdistrat = zdist1/parentzdist
+		comparablezs = True
+		for k in range(len(zdistrat)):
+			if (zdistrat[k] > 1.5) or (zdistrat[k] < 0.5):
+				comparablezs = False
+		if comparablezs:
+			centerk = fast_stack(newras1, newdecs1, planckmap, iterations=0)
+			stacks.append(centerk)
+			if centerk == np.nanmax(stacks):
+				bestidxs = randidxs1
+
+		else:
+			stacks.append(0)
+	maxidx = np.where(stacks == np.nanmax(stacks))[0][0]
+	print(stacks[maxidx])
+
+	outtab = Table(cat[bestidxs])
+	outtab.write('catalogs/derived/highk.fits', format='fits', overwrite=True)"""
 
 

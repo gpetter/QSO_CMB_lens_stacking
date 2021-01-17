@@ -1,81 +1,77 @@
-import matplotlib.pyplot as plt
-import numpy as np
-import healpy as hp
-from astropy.io import fits
-import pandas as pd
 import convergence_map
 import importlib
-importlib.reload(convergence_map)
 import stacking
+import fitting
+import astropy.units as u
+import glob
+import sample
+import autocorrelation
+import first_stacking
+importlib.reload(convergence_map)
 importlib.reload(stacking)
+importlib.reload(sample)
+importlib.reload(fitting)
+importlib.reload(autocorrelation)
+importlib.reload(first_stacking)
 
 
 
-"""convergence_map.read_planck_map(False)
+nsides = 2048
+lmin = 100
+smooth_fwhm = 15. * u.arcmin
 
-# smooth first then mask
-convergence_map.smooth_map('planck_map.fits', 15., 'smoothed_planck.fits')
+reso = 1.5
+imsize = 240
 
-convergence_map.mask_map('smoothed_planck.fits', 'mask.fits', False, 'smoothed_masked_planck.fits')"""
-
-
-
-sdss_quasar_cat = (fits.open('DR14Q_v4_4.fits'))[1].data
-
-good_idxs = np.where((sdss_quasar_cat['Z'] <= 2.2) & (sdss_quasar_cat['Z'] >= 0.9) & (sdss_quasar_cat['FIRST_MATCHED']==0) & (sdss_quasar_cat['MI'] <= -24))[0]
-ras = sdss_quasar_cat['RA'][good_idxs]
-decs = sdss_quasar_cat['DEC'][good_idxs]
-perm = np.random.permutation(len(ras))
-newras = ras[perm]
-newdecs = decs[perm]
-
-stacking.stack_convergence('smoothed_masked_planck.fits', 5., 250., newras, newdecs, ['stacked_1.npy', 'signoise_1.npy'], True)
+color = 'blue'
+sample_id = 'xdqso_specz'
+plots = True
 
 
-"""#stacking.stack_convergence('smoothed_masked_planck_map.fits', 2., 100., ras, decs, ['kappa_extra.npy', 'signoise_extra.npy'], True)
+# prepare all data for stacking
+# can convert lensing klm file to smoothed masked map
+# can do the same for all noise realizations
+# can take a quasar catalog and define a luminosity complete sample
+# then can split sample into red, control and blue quasars with the same redshift distribution
+# will weight across bolometric luminosity to account for luminosity effects
+def prepare_data(process_map, process_noise, process_sample, select_sample, sample_name):
+	if process_map:
+		convergence_map.klm_2_product('maps/dat_klm.fits', smooth_fwhm, 'maps/mask.fits', nsides, lmin, writename='maps/smoothed_masked_planck')
 
-a = []
-for i in range(30):
-    perm = np.random.permutation(len(ras))
-    print(perm)
-    newras = ras[perm]
-    newdecs = decs[perm]
-    b = stacking.stack_convergence('smoothed_masked_planck_eq.fits', 2., 100., newras, newdecs, ['kappa_2.npy', 'signoise_2.npy'], False)
-    a.append(b[1])
-c = np.mean(np.array(a), axis=0)
-c.dump('avg_signoise')
+	if process_noise:
+		noisemaplist = glob.glob('noisemaps/klm/sim*')
+		for j in range(len(noisemaplist)):
+			convergence_map.klm_2_product(noisemaplist[j], smooth_fwhm, 'maps/mask.fits', nsides, lmin, subtract_mf=True, writename='noisemaps/maps/%s' % int(noisemaplist[j].split('.')[0].split('_')[2]))
+
+	if process_sample:
+		#sample.fix_dr16()
+		#sample.define_core_sample(sample_name)
+		if sample_name == 'xdqso_specz':
+			#sample.match_phot_qsos_to_spec_qsos()
+			sample.write_properties(sample_name, speczs=True)
+		else:
+			sample.write_properties(sample_name, speczs=False)
+
+	if select_sample:
+		#sample.luminosity_complete_cut(sample_name, -20, 0.5, 2.5, plots=plots, magcut=21.5, pcut=0.95, peakscut=1, apply_planck_mask=True)
+		sample.red_blue_samples(sample_name, plots=plots)
 
 
-print('yo')
+#repare_data(False, False, False, True, sample_id)
 
-convergence_map.mask_map('planck_map.fits', 'mask.fits', False, -1)
+#sample.first_fraction(sample_id, 'first')
 
-convergence_map.smooth_map('masked_planck_map.fits', 15., 'smoothed_masked_planck_map.fits')
-                             
-convergence_map.change_coord('smoothed_masked_planck_map.fits', ['G', 'C'], 'smoothed_masked_planck_eq.fits')
-                             
-stacking.stack_convergence('smoothed_masked_planck_eq.fits', 2., 100., ras, decs, ['kappa_3.npy', 'signoise_3.npy'], False)
-                             
-print('fam')
+#stacking.stack_suite(color, sample_id, True, False, mode='cutout', reso=reso, imsize=imsize, nsides=nsides)
 
-convergence_map.smooth_map('planck_map.fits', 15., 'smoothed_first.fits')
-                             
-convergence_map.mask_map('smoothed_first.fits', 'mask.fits', False, -1)
-                             
+#fitting.fit_mass_suite(color, sample_id, plot=True, use_peak=False, do_stack=False, reso=reso)
 
-                             
-stacking.stack_convergence('smoothed_first_eq.fits', 2., 100., ras, decs, ['kappa_4.npy', 'signoise_4.npy'], False)
+#sample.radio_detect_fraction(qso_cat_name=sample_id, radio_name='LoTSS', bins=10)
+#sample.median_radio_flux_for_color(sample_id)
+#first_stacking.download_first_cutouts_mp()
+#first_stacking.stack_first(color, sample_id)
 
-convergence_map.mask_map('smoothed_first.fits', 'mask.fits', True, -1)
-                             
-convergence_map.change_coord('masked_planck_map.fits', ['G', 'C'], 'smoothed_first_mean_eq.fits')
-                             
-stacking.stack_convergence('smoothed_first_mean_eq.fits', 2., 100., ras, decs, ['kappa_5.npy', 'signoise_5.npy'], False)
-
-print('cuz')
-                             
-convergence_map.mask_map('planck_map.fits', 'mask.fits', True, -1)
-                             
-convergence_map.change_coord('masked_planck_map.fits', ['G', 'C'], 'not_smoothed.fits')
-                             
-stacking.stack_convergence('not_smoothed.fits', 2., 100., ras, decs, ['kappa_6.npy', 'signoise_6.npy'], False)"""
+#autocorrelation.angular_correlation_function(sample_id, color, nbootstraps=3, nthreads=10, nbins=20, useweights=False)
+#autocorrelation.spatial_correlation_function(sample_id, color, nthreads=10, nbins=10)
+sample.median_radio_flux_for_color(sample_id, luminosity=True)
+#sample.kappa_for_color(sample_id)
+#plotting.plot_ang_correlation_function()
