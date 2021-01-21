@@ -182,7 +182,7 @@ def median_stack(ids):
 	stacked = np.nanmedian(cutouts, axis=0)
 	return stacked
 
-def median_first_stack(color, sample_name, weights=None, prob_weights=None, outname=None):
+def median_first_stack(color, sample_name, weights=None, prob_weights=None, outname=None, nbootstraps=0):
 	cat = fits.open('catalogs/derived/%s_%s.fits' % (sample_name, color))[1].data
 
 	if (sample_name == 'xdqso') or (sample_name == 'xdqso_specz'):
@@ -200,4 +200,13 @@ def median_first_stack(color, sample_name, weights=None, prob_weights=None, outn
 	if prob_weights is None:
 		prob_weights = np.ones(len(ids))
 
-	return median_stack(ids)
+	# White et al. 2007 found snapshot bias, correct for this
+	bias_corrected_stack = 1.4 * median_stack(ids)
+	stackrealizations = np.zeros(nbootstraps)
+	for j in range(nbootstraps):
+		bootidxs = np.random.choice(len(ids), len(ids))
+		newids = ids[bootidxs]
+		stackrealizations[j] = 1.4*median_stack(newids)
+	stackerr = np.std(stackrealizations)
+
+	return bias_corrected_stack
