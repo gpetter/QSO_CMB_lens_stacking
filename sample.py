@@ -213,7 +213,7 @@ def write_properties(sample, speczs=False):
 		trimmed_cat.write('QSO_cats/dr16_new.fits', format='fits', overwrite=True)
 
 	elif sample == 'eboss_lss':
-		qso_cat = Table(fits.open('autoQSOcats/eBOSS_fullsky_phot.fits')[1].data)
+		qso_cat = Table(fits.open('catalogs/lss/eBOSS_NGC_phot.fits')[1].data)
 		goodwise = (qso_cat['W1_FLUX'] > 0) & (qso_cat['W2_FLUX'] > 0)
 		trimmed_cat = qso_cat[np.where(goodwise)]
 		dered_i_mags = trimmed_cat['PSFMAG'][:, band_idxs['i']] - trimmed_cat['EXTINCTION'][:, band_idxs['i']]
@@ -225,7 +225,7 @@ def write_properties(sample, speczs=False):
 		trimmed_cat['g-i'] = dered_g_mags - dered_i_mags
 		trimmed_cat['logL1.5'] = rest_ir_lum(trimmed_cat['W1_FLUX'], trimmed_cat['W2_FLUX'], trimmed_cat['Z'], 1.5)
 		trimmed_cat['i_mag'] = dered_i_mags
-		trimmed_cat.write('autoQSOcats/eBOSS_LSS_new.fits', format='fits', overwrite=True)
+		trimmed_cat.write('catalogs/lss/eBOSS_NGC_new.fits', format='fits', overwrite=True)
 
 	# write properties to an XDQSO photometric catalog
 	else:
@@ -277,6 +277,18 @@ def write_properties(sample, speczs=False):
 
 
 
+def match_lss_dr16():
+	dr16 = Table(fits.open('catalogs/SDSS_QSOs/DR16Q_v4.fits')[1].data)
+	ngc = Table(fits.open('catalogs/lss/eBOSS_QSO_clustering_data-NGC-vDR16.fits')[1].data)
+	photcoords = SkyCoord(ra=dr16['RA']*u.degree, dec=dr16['DEC']*u.degree)
+	lsscoords = SkyCoord(ra=ngc['RA'] * u.degree, dec=ngc['DEC'] * u.degree)
+	photidx, lssidx, d2d, d3d = lsscoords.search_around_sky(photcoords, 1 * u.arcsec)
+	fintable = Table(ngc[lssidx])
+	fintable['PSFMAG'] = dr16['PSFMAG'][photidx]
+	fintable['W1_FLUX'] = dr16['W1_FLUX'][photidx]
+	fintable['W2_FLUX'] = dr16['W2_FLUX'][photidx]
+	fintable['EXTINCTION'] = dr16['EXTINCTION'][photidx]
+	fintable.write('catalogs/lss/eBOSS_NGC_phot.fits', format='fits', overwrite=True)
 
 
 
@@ -373,7 +385,7 @@ def red_blue_samples(qso_cat_name, plots):
 		qso_cat = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data
 	elif qso_cat_name == 'eboss_lss':
 		zkey = 'Z'
-		qso_cat = fits.open('catalogs/lss/eBOSS_LSS_new.fits')[1].data
+		qso_cat = fits.open('catalogs/lss/eBOSS_NGC_new.fits')[1].data
 		sources_in_bins = 1000.
 	else:
 		zkey = 'PEAKZ'
@@ -527,9 +539,21 @@ def radio_detect_fraction(qso_cat_name, radio_name='FIRST', lowmag=10, highmag=3
 	plotting.radio_detect_frac_plot(radio_detect_frac, surv_name=radio_name, return_plot=return_plot)
 
 
-def median_radio_flux_for_color(qso_cat_name, bins=10, luminosity=False):
+def median_radio_flux_for_color(qso_cat_name, bins=10, luminosity=False, remove_detections=False, minz=0, maxz=10, minL=21, maxL=26):
 	import first_stacking
 	qso_cat = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data
+
+	if remove_detections:
+		qsocoords = SkyCoord(ra=qso_cat['RA_XDQSO']*u.deg, dec=qso_cat['DEC_XDQSO']*u.deg)
+		firstcat = fits.open('catalogs/radio_cats/first_14dec17.fits')[1].data
+		firstcoords = SkyCoord(ra=firstcat['RA']*u.deg, dec=firstcat['DEC']*u.deg)
+		firstidx, qsoidx, d2d, d3d = qsocoords.search_around_sky(firstcoords, 10*u.arcsec)
+		nondetectidxs = np.setdiff1d(np.arange(len(qso_cat)), qsoidx)
+		qso_cat = qso_cat[nondetectidxs]
+
+
+	qso_cat = qso_cat[np.where((qso_cat['PEAKZ'] > minz) & (qso_cat['PEAKZ'] < maxz))]
+	qso_cat = qso_cat[np.where((qso_cat['logL1.5'] > minL) & (qso_cat['logL1.5'] < maxL))]
 
 	gminusi = qso_cat['g-i']
 	zs = qso_cat['PEAKZ']
@@ -553,21 +577,27 @@ def median_radio_flux_for_color(qso_cat_name, bins=10, luminosity=False):
 			gminusibinidxs[j] += list(
 				np.where((gminusi <= color_bins[j + 1]) & (gminusi > color_bins[j]) & in_z_bin)[0])
 
-	colors, median_radio_in_bins = [], []
+	colors, median_radio_in_bins, Lbols = [], [], []
 	for i in range(bins):
 		binnedcat = qso_cat[gminusibinidxs[i]]
 		colors.append(np.median(binnedcat['g-i']))
 		median_radio_in_bins.append(np.max(first_stacking.median_stack(binnedcat['OBJID_XDQSO'])))
+		Lbols.append(np.median(binnedcat['logL1.5']))
 	print(median_radio_in_bins)
 
-	if luminosity:
-		medz = np.median(zs)
-		medlumdist = astropycosmo.luminosity_distance(medz)
-		lumnu = ((4*np.pi*(medlumdist**2)*(median_radio_in_bins*u.Jy)/((1+medz)**(1-0.7))).to(u.W/u.Hz)).value
 
-		plotting.plot_median_radio(colors, [median_radio_in_bins, lumnu], lum=True)
+	medz = np.median(zs)
+	medlumdist = astropycosmo.luminosity_distance(medz)
+	lumnu = ((4 * np.pi * (medlumdist ** 2) * (median_radio_in_bins * u.Jy) / ((1 + medz) ** (1 - 0.7))).to(
+		u.W / u.Hz)).value
+
+	radioloudness = np.log10(lumnu) - Lbols
+
+	if luminosity:
+
+		plotting.plot_median_radio(colors, [median_radio_in_bins, lumnu], medz=medz, lum=True)
 	else:
-		plotting.plot_median_radio(colors, median_radio_in_bins)
+		plotting.plot_median_radio(colors, [median_radio_in_bins, radioloudness], medz)
 
 
 def kappa_for_color(qso_cat_name, bins=10):
