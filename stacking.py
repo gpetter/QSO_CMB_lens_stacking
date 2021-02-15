@@ -48,6 +48,7 @@ def stack_iteration(current_sum, current_weightsum, new_cutout, weight, prob_wei
 	# create an image filled with the value of the weight, set weights to zero where the true map is masked
 	wmat = np.full((imsize, imsize), weight)
 	wmat[np.isnan(new_cutout)] = 0
+
 	# the weights for summing in the denominator are multiplied by the probabilty weight to account
 	# for the fact that some sources aren't quasars and contribute no signal to the stack
 	wmat_for_sum = wmat * prob_weight
@@ -63,10 +64,14 @@ def find_closest_cutout(l, b, fixedls, fixedbs):
 
 
 
-def stack_cutouts(ras, decs, weights, prob_weights, imsize, nstack, outname=None):
+def stack_cutouts(ras, decs, weights, prob_weights, imsize, nstack, outname=None, bootstrap=False):
 	# read in previously calculated projections covering large swaths of sky
 	projectionlist = glob.glob('planckprojections/*')
 	projections = np.array([np.load(filename, allow_pickle=True) for filename in projectionlist])
+
+	if bootstrap:
+		bootidxs = np.random.choice(len(ras), len(ras))
+		ras, decs, weights, prob_weights = ras[bootidxs], decs[bootidxs], weights[bootidxs], prob_weights[bootidxs]
 	# center longitudes/latitudes of projections
 	projlons = [int(filename.split('/')[1].split('.')[0].split('_')[0]) for filename in projectionlist]
 	projlats = [int(filename.split('/')[1].split('.')[0].split('_')[1]) for filename in projectionlist]
@@ -99,7 +104,7 @@ def stack_cutouts(ras, decs, weights, prob_weights, imsize, nstack, outname=None
 def sum_projections(lon, lat, weights, prob_weights, imsize, reso, inmap, nstack):
 	running_sum, weightsum = np.zeros((imsize, imsize)), np.zeros((imsize, imsize))
 	for j in range(nstack):
-		azproj = hp.projector.AzimuthalProj(rot=[lon[j], lat[j]], xsize=imsize, reso=reso, lamb=True)
+		azproj = hp.projector.AzimuthalProj(rot=[lon[j], lat[j], np.random.randint(0, 360)], xsize=imsize, reso=reso, lamb=True)
 		new_im = weights[j] * convergence_map.set_unseen_to_nan(azproj.projmap(inmap, vec2pix_func=newvec2pix))
 
 		running_sum, weightsum = stack_iteration(running_sum, weightsum, new_im, weights[j], prob_weights[j], imsize)
@@ -143,8 +148,9 @@ def stack_projections(ras, decs, weights=None, prob_weights=None, imsize=240, ou
 		# the number of chunks is the number of stacks divided by the chunk size rounded up to the nearest integer
 		nchunks = ceil(nstack / chunksize)
 
+
 		# initalize multiprocessing pool with one less core than is available for stability
-		p = mp.Pool(mp.cpu_count() - 1)
+		p = mp.Pool(5)
 		# fill in all arguments to stack_chunk function but the index,
 		# Pool.map() requires function to only take one paramter
 		stack_chunk_partial = partial(stack_chunk, chunksize, nstack, lons, lats, inmap, weights, prob_weights,
@@ -166,12 +172,6 @@ def stack_projections(ras, decs, weights=None, prob_weights=None, imsize=240, ou
 
 	return finalstack
 
-
-"""# stack at random positions by randomly shifting the ras by 2 to 15 degrees
-def stack_random_positions(stackmap, outname, ras, decs, weighting):
-	shifts = np.random.uniform(2., 14., len(ras))
-	shifted_ras = ras + shifts
-	stack_mp(stackmap, shifted_ras, decs, outname=outname, weighting=weighting)"""
 
 
 def fast_stack(ras, decs, inmap, weights=None, prob_weights=None, nsides=2048, iterations=500):
@@ -197,6 +197,7 @@ def fast_stack(ras, decs, inmap, weights=None, prob_weights=None, nsides=2048, i
 	if iterations > 0:
 		for x in range(iterations):
 			outerkappa.append(np.nanmean(inmap[hp.ang2pix(nsides, (lons + np.random.uniform(2., 14.)), lats, lonlat=True)]))
+
 		return centerstack, np.nanstd(outerkappa)
 	else:
 		return centerstack
@@ -204,17 +205,21 @@ def fast_stack(ras, decs, inmap, weights=None, prob_weights=None, nsides=2048, i
 
 # if running on local machine, can use this to stack using multiprocessing.
 # Otherwise use stack_mpi.py to perform stack on a cluster computer
-def stack_suite(color, sample_name, stack_map, stack_noise, reso=1.5, imsize=240, nsides=2048, mode='mp', nstack=None):
-	planck_map = hp.read_map('maps/smoothed_masked_planck.fits', dtype=np.single)
+def stack_suite(color, sample_name, stack_map, stack_noise, reso=1.5, imsize=240, nsides=2048, mode='normal', nstack=None, bootstrap=False, temperature=False, random=False):
 
-	cat = fits.open('QSO_cats/%s_%s.fits' % (sample_name, color))[1].data
+	if temperature:
+		planck_map = hp.read_map('maps/smica_masked.fits')
+		outname = 'stacks/%s_%s_temp' % (sample_name, color)
+	else:
+		planck_map = hp.read_map('maps/smoothed_masked_planck.fits', dtype=np.single)
+		outname = 'stacks/%s_%s_stack' % (sample_name, color)
+
+	cat = fits.open('catalogs/derived/%s_%s.fits' % (sample_name, color))[1].data
 	if (sample_name == 'xdqso') or (sample_name == 'xdqso_specz'):
-		rakey, deckey = 'RA_XDQSO', 'DEC_XDQSO'
 		probs = cat['PQSO']
 	else:
-		rakey, deckey = 'RA', 'DEC'
 		probs = np.ones(len(cat))
-	ras, decs = cat[rakey], cat[deckey]
+	ras, decs = cat['RA'], cat['DEC']
 
 	if nstack is None:
 		nstack = len(ras)
@@ -224,12 +229,16 @@ def stack_suite(color, sample_name, stack_map, stack_noise, reso=1.5, imsize=240
 	else:
 		weights = cat['weight']
 
-	outname = 'stacks/%s_%s_stack' % (sample_name, color)
+	if random:
+		ras = ras + np.random.uniform(2., 14., len(ras))
+		outname = 'stacks/random_stack'
+
+
 
 	if mode == 'fast':
 		return fast_stack(ras, decs, planck_map, weights=weights, prob_weights=probs, nsides=nsides)
 	elif mode == 'cutout':
-		stack_cutouts(ras, decs, weights, probs, imsize, nstack, outname)
+		return stack_cutouts(ras, decs, weights, probs, imsize, nstack, outname, bootstrap)
 	elif mode == 'mpi':
 		for line in fileinput.input(['stack_mpi.py'], inplace=True):
 			if line.strip().startswith('sample_name = '):
@@ -258,41 +267,5 @@ def stack_suite(color, sample_name, stack_map, stack_noise, reso=1.5, imsize=240
 				         outname='noise_stacks/%s_%s' % (j, color), reso=reso, imsize=imsize, nstack=nstack)
 
 
-"""def find_differences():
-	cat = fits.open('catalogs/derived/xdqso_specz_complete.fits')[1].data
-	ras = cat['RA_XDQSO']
-	decs = cat['DEC_XDQSO']
-	zs = cat['PEAKZ']
-	parentzdist = np.histogram(zs, bins=20, range=(0.5, 2.5), density=True)[0]
-	planckmap = hp.read_map('maps/smoothed_masked_planck.fits', dtype=np.single)
-
-	stacks = []
-	bestidxs = []
-	for j in range(1000):
-		randidxs1 = np.random.choice(a=len(ras), size=int(len(ras)/5), replace=False)
-		newras1, newdecs1, newzs1 = ras[randidxs1], decs[randidxs1], zs[randidxs1]
-		#randidxs2 = np.random.Generator.choice(a=len(ras), size=int(len(ras) / 8), replace=False)
-		#newras2, newdecs2, newzs2 = ras[randidxs2], decs[randidxs2], zs[randidxs2]
-		zdist1 = np.histogram(newzs1, bins=20, range=(0.5, 2.5), density=True)[0]
-		#zdist2 = np.histogram(newzs2, bins=20, range=(0.5, 2.5), density=True)[0]
-		#zdistratio = zdist1/zdist2
-		zdistrat = zdist1/parentzdist
-		comparablezs = True
-		for k in range(len(zdistrat)):
-			if (zdistrat[k] > 1.5) or (zdistrat[k] < 0.5):
-				comparablezs = False
-		if comparablezs:
-			centerk = fast_stack(newras1, newdecs1, planckmap, iterations=0)
-			stacks.append(centerk)
-			if centerk == np.nanmax(stacks):
-				bestidxs = randidxs1
-
-		else:
-			stacks.append(0)
-	maxidx = np.where(stacks == np.nanmax(stacks))[0][0]
-	print(stacks[maxidx])
-
-	outtab = Table(cat[bestidxs])
-	outtab.write('catalogs/derived/highk.fits', format='fits', overwrite=True)"""
 
 
