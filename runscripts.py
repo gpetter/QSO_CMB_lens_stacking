@@ -7,7 +7,9 @@ import glob
 import sample
 import autocorrelation
 import first_stacking
+import plotting
 importlib.reload(convergence_map)
+importlib.reload(plotting)
 importlib.reload(stacking)
 importlib.reload(sample)
 importlib.reload(fitting)
@@ -26,6 +28,10 @@ imsize = 240
 color = 'blue'
 sample_id = 'xdqso_specz'
 plots = True
+nbins = 5
+colorkey = 'r-W2'
+mission = 'both'
+lumkey = 'logL1_5'
 
 
 # prepare all data for stacking
@@ -46,32 +52,39 @@ def prepare_data(process_map, process_noise, process_sample, select_sample, samp
 	if process_sample:
 		#sample.fix_dr16()
 		#sample.define_core_sample(sample_name)
+		sample.update_WISE()
 		if sample_name == 'xdqso_specz':
-			#sample.match_phot_qsos_to_spec_qsos()
+			sample.match_phot_qsos_to_spec_qsos()
 			sample.write_properties(sample_name, speczs=True)
 		else:
 			sample.write_properties(sample_name, speczs=False)
 
 	if select_sample:
-		#sample.luminosity_complete_cut(sample_name, -20, 0.5, 2.5, plots=plots, magcut=21.5, pcut=0.95, peakscut=1, apply_planck_mask=True)
-		sample.red_blue_samples(sample_name, plots=plots)
+		sample.luminosity_complete_cut(sample_name, -21, 0.5, 2.5, plots=plots, magcut=100, pcut=0.95, peakscut=1, apply_planck_mask=True, band='i', colorkey=colorkey)
+		sample.red_blue_samples(sample_name, plots=plots, ncolorbins=nbins, offset=False, remove_reddest=False, colorkey=colorkey, lumkey=lumkey)
 
 
-#repare_data(False, False, False, True, sample_id)
+prepare_data(False, False, False, True, sample_id)
+sample.kappa_for_color(sample_id, colorkey, bins=nbins, removereddest=True, dostacks=True, mission=mission, use_weights=False)
+#sample.clustering_for_color(sample_id, mode='spatial_cross', cap='both', minscale=0.4, maxscale=1.3, bins=5, use_weights=False)
+#sample.clustering_for_color(sample_id, mode='ang_cross', minscale=-2, maxscale=0, bins=6)
+#autocorrelation.angular_correlation_function(sample_id, 10, nbootstraps=3, nthreads=12)
 
-#sample.first_fraction(sample_id, 'first')
-
-#stacking.stack_suite(color, sample_id, True, False, mode='cutout', reso=reso, imsize=imsize, nsides=nsides)
-
-#fitting.fit_mass_suite(color, sample_id, plot=True, use_peak=False, do_stack=False, reso=reso)
-
-#sample.radio_detect_fraction(qso_cat_name=sample_id, radio_name='LoTSS', bins=10)
-#sample.median_radio_flux_for_color(sample_id)
+#print(stacking.stack_suite(color, sample_id, True, False, mode='fast', reso=reso, imsize=imsize, nsides=nsides, temperature=False, bootstrap=True))
+#stacking.stack_suite(color, sample_id, True, False, mode='cutout')
+#fitting.fit_mass_suite(color, sample_id, plot=True, reso=reso, binsize=10, mode='bootstrap')
+#sample.radio_detect_fraction(qso_cat_name=sample_id, colorkey=colorkey, radio_name='FIRST')
+#sample.median_radio_flux_for_color(sample_id, colorkey, offset=False, mode='lum', nbootstraps=3, remove_reddest=True)
 #first_stacking.download_first_cutouts_mp()
 #first_stacking.stack_first(color, sample_id)
-
-#autocorrelation.angular_correlation_function(sample_id, color, nbootstraps=3, nthreads=10, nbins=20, useweights=False)
-#autocorrelation.spatial_correlation_function(sample_id, color, nthreads=10, nbins=10)
-sample.median_radio_flux_for_color(sample_id, luminosity=True)
-#sample.kappa_for_color(sample_id)
-#plotting.plot_ang_correlation_function()
+#autocorrelation.angular_correlation_function(sample_id, color, nbootstraps=3, nthreads=12, nbins=5, useweights=False)
+#autocorrelation.cross_correlation_function_angular(sample_id, 1, nbins=10, nthreads=12, nbootstraps=3)
+#autocorrelation.spatial_correlation_function(sample_id, 'all', 'NGC', nthreads=12, nbins=40, nbootstraps=3, useweights=False, minscale=0, maxscale=2.5)
+#plotting.plot_spatial_correlation_function(40, 0, 2.5, 1)
+#sample.temp_for_color(sample_id, bins=10, offset=False, removereddest=False)
+#fitting.fit_mass_to_cutouts(sample_id, color, nbootstraps=5)
+#print(stacking.stack_suite(color, sample_id, True, False, reso=1.5, mode='fast', temperature=True))
+#stacking.stack_suite(color, sample_id, True, True, temperature=False, reso=reso, mode='mpi')
+#autocorrelation.cross_corr_func_spatial(color, nbins=10, nthreads=12, useweights=True)
+#sample.sed_for_color(sample_id, 10, False)
+#first_stacking.median_first_stack(color, sample_id, write=True)

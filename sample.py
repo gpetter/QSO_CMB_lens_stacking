@@ -7,23 +7,39 @@ from colossus.cosmology import cosmology
 import stacking
 import plotting
 import importlib
-from astropy.table import Table
+from astropy.table import Table, vstack
 import pandas as pd
 from scipy.optimize import curve_fit
-from scipy import stats
+from astropy import stats as astrostats
+import astropy.constants as con
 import spectrumtools
 import wise_tools
+import lensingModel
+import fitting
+import autocorrelation
+import weighting
+import binning
+importlib.reload(binning)
+importlib.reload(weighting)
+importlib.reload(autocorrelation)
+importlib.reload(lensingModel)
 importlib.reload(wise_tools)
 importlib.reload(spectrumtools)
 importlib.reload(stacking)
 importlib.reload(plotting)
+importlib.reload(fitting)
 
 cosmo = cosmology.setCosmology('planck18')
 astropycosmo = cosmo.toAstropy()
 
 
-band_idxs = {"u": 0, "g": 1, "r": 2, "i": 3, "z": 4}
-bsoftpars = [1.4e-10, 0.9e-10, 1.2e-10, 1.8e-10, 7.4e-10]
+band_idxs = {"u": 0, "g": 1, "r": 2, "i": 3, "z": 4, "nuv": 5, "fuv": 6, "Y": 7, "J": 8, "H": 9, "K": 10, "W1": 11, "W2": 12}
+bsoftpars = np.array([1.4e-10, 0.9e-10, 1.2e-10, 1.8e-10, 7.4e-10, 1e-10, 1e-10, 3e-10, .9e-10, 5.2e-10, 1.1e-9, 1e-10, 1e-10])
+vega_to_ab = np.array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 309.54/3631, 171.787/3631])
+
+def gaussian(x, mu, s1):
+	gauss = 1/(np.sqrt(2*np.pi)*s1) * np.exp(-np.square(x - mu) / (2 * (s1 ** 2)))
+	return gauss
 
 
 # find which sources in a sample satisfy a certain bitmask parameter
@@ -97,11 +113,63 @@ def define_core_sample(sample):
 		coresample = dr14[coreidxs]
 		coresample.write('catalogs/derived/dr14_core.fits', format='fits', overwrite=True)
 
+def update_WISE(maxsep=2):
+	xdqso = Table(fits.open('catalogs/SDSS_QSOs/xdqso_ALLWISE_catWISE.fits')[1].data)
+	badallwise = xdqso['angDist_aw'] > maxsep
+	xdqso['W4mag_aw'][badallwise] = np.nan
+	xdqso['W3mag_aw'][badallwise] = np.nan
+	xdqso['W2mag_aw'][badallwise] = np.nan
+	xdqso['W1mag_aw'][badallwise] = np.nan
+	xdqso['e_W4mag_aw'][badallwise] = np.nan
+	xdqso['e_W3mag_aw'][badallwise] = np.nan
+	xdqso['e_W2mag_aw'][badallwise] = np.nan
+	xdqso['e_W1mag_aw'][badallwise] = np.nan
+
+
+
+	badcatwise = xdqso['angDist_cw'] > maxsep
+	xdqso['W1mag_cw'][badcatwise] = np.nan
+	xdqso['e_W1mag_cw'][badcatwise] = np.nan
+	xdqso['W2mag_cw'][badcatwise] = np.nan
+	xdqso['e_W2mag_cw'][badcatwise] = np.nan
+	xdqso['pmRA'][badcatwise] = np.nan
+	xdqso['e_pmRA'][badcatwise] = np.nan
+	xdqso['pmDE'][badcatwise] = np.nan
+	xdqso['e_pmDE'][badcatwise] = np.nan
+
+	goodcatwise = (xdqso['angDist_cw'] < maxsep)
+
+	fw1 = 10**(-xdqso['W1mag_cw']/2.5) * 1e9
+	fw2 = 10**(-xdqso['W2mag_cw']/2.5) * 1e9
+	efw1 = xdqso['e_W1mag_cw'] * fw1
+	efw2 = xdqso['e_W2mag_cw'] * fw2
+
+
+	nativew1flux = xdqso['PSFFLUX'][:, 11]
+	nativew2flux = xdqso['PSFFLUX'][:, 12]
+	nativew1_ivar = xdqso['PSFFLUX_IVAR'][:, 11]
+	nativew2_ivar = xdqso['PSFFLUX_IVAR'][:, 12]
+
+	nativew1flux[goodcatwise] = fw1[goodcatwise]
+	nativew2flux[goodcatwise] = fw2[goodcatwise]
+	nativew1_ivar[goodcatwise] = 1 / np.square(efw1[goodcatwise])
+	nativew2_ivar[goodcatwise] = 1 / np.square(efw2[goodcatwise])
+
+	xdqso['PSFFLUX'][:, 11] = nativew1flux
+	xdqso['PSFFLUX'][:, 12] = nativew2flux
+	xdqso['PSFFLUX_IVAR'][:, 11] = nativew1_ivar
+	xdqso['PSFFLUX_IVAR'][:, 12] = nativew2_ivar
+
+
+
+	xdqso.write('catalogs/derived/xdqso_WISE.fits', format='fits', overwrite=True)
+
+
 
 def match_phot_qsos_to_spec_qsos(update_probs=True, core_only=False):
 	dr16 = Table(fits.open('catalogs/derived/dr16_ok.fits')[1].data)
 	speccoords = SkyCoord(ra=dr16['RA']*u.degree, dec=dr16['DEC']*u.degree)
-	xdqso = Table(fits.open('catalogs/SDSS_QSOs/xdqso-z-cat.fits')[1].data)
+	xdqso = Table(fits.open('catalogs/derived/xdqso_WISE.fits')[1].data)
 	photcoords = SkyCoord(ra=xdqso['RA']*u.degree, dec=xdqso['DEC']*u.degree)
 
 	# match XDQSO catalog with DR16 spectroscopic catalog
@@ -170,7 +238,7 @@ def write_properties(sample, speczs=False):
 		good_idxs = np.where((qso_cat['FIRST_MATCHED'] < 1))
 
 	elif sample == 'dr16':
-		qso_cat = Table((fits.open('catalogs/derived/dr16_core.fits'))[1].data)
+		qso_cat = Table((fits.open('catalogs/derived/dr16_ok.fits'))[1].data)
 
 
 		goodzs = ((qso_cat['Z'] > 0) & (qso_cat['Z'] < 5.494))
@@ -190,36 +258,48 @@ def write_properties(sample, speczs=False):
 		i_abs_mags = k_correct_richards(dered_i_mags, trimmed_cat['Z'])
 		trimmed_cat['myMI'] = i_abs_mags
 		trimmed_cat['g-i'] = (dered_g_mags - dered_i_mags)
-		trimmed_cat['logL1.5'] = wise_tools.rest_ir_lum(trimmed_cat['W1_FLUX'], trimmed_cat['W2_FLUX'], trimmed_cat['Z'], 1.5)
+		trimmed_cat['logL'] = wise_tools.rest_ir_lum(trimmed_cat['W1_FLUX'], trimmed_cat['W2_FLUX'], trimmed_cat['Z'], 1.5)
 		trimmed_cat['i_mag'] = dered_i_mags
 		trimmed_cat.write('catalogs/derived/dr16_new.fits', format='fits', overwrite=True)
 
 	elif sample == 'eboss_lss':
-		qso_cat = Table(fits.open('catalogs/lss/eBOSS_fullsky_phot.fits')[1].data)
-		goodwise = (qso_cat['W1_FLUX'] > 0) & (qso_cat['W2_FLUX'] > 0)
+		qso_cat = Table(fits.open('catalogs/lss/eBOSS_fullsky_comov_phot.fits')[1].data)
+		goodwise = (qso_cat['PSFFLUX'][:, 11] > 0) & (qso_cat['PSFFLUX'][:, 12] > 0)
 		trimmed_cat = qso_cat[np.where(goodwise)]
-		dered_i_mags = trimmed_cat['PSFMAG'][:, band_idxs['i']] - trimmed_cat['EXTINCTION'][:, band_idxs['i']]
-		dered_g_mags = trimmed_cat['PSFMAG'][:, band_idxs['g']] - trimmed_cat['EXTINCTION'][:, band_idxs['g']]
+		psfmaggies = np.array(trimmed_cat['PSFFLUX'] / 1e9) * vega_to_ab
+		psfmags = -2.5 / np.log(10.) * (
+				np.arcsinh(psfmaggies / (2 * bsoftpars)) + np.log(bsoftpars))
+		deredmags = psfmags - trimmed_cat['EXTINCTION']
 
+		magerrs = 1 / (trimmed_cat['PSFFLUX'] * np.sqrt(trimmed_cat['PSFFLUX_IVAR']))
 
+		w1_nu_f_nu = np.array(
+			309.54 * trimmed_cat['PSFFLUX'][:, 11] / 1e9 * (con.c / (3.368 * u.micron)).to('Hz').value)
+		w2_nu_f_nu = np.array(
+			171.787 * trimmed_cat['PSFFLUX'][:, 12] / 1e9 * (con.c / (4.618 * u.micron)).to('Hz').value)
 
-		trimmed_cat['myMI'] = k_correct_richards(dered_i_mags, trimmed_cat['Z'])
-		trimmed_cat['g-i'] = dered_g_mags - dered_i_mags
-		trimmed_cat['logL1.5'] = wise_tools.rest_ir_lum(trimmed_cat['W1_FLUX'], trimmed_cat['W2_FLUX'], trimmed_cat['Z'], 1.5)
-		trimmed_cat['i_mag'] = dered_i_mags
-		trimmed_cat.write('catalogs/derived/eBOSS_fullsky_new.fits', format='fits', overwrite=True)
+		trimmed_cat['deredmags'] = deredmags
+		trimmed_cat['myMI'] = k_correct_richards(deredmags[:, 3], trimmed_cat['Z'])
+		trimmed_cat['g-i'] = deredmags[:, 1] - deredmags[:, 3]
+		trimmed_cat['logL1_5'] = wise_tools.rest_ir_lum(np.array([w1_nu_f_nu, w2_nu_f_nu]),
+		                                                trimmed_cat['Z'], 1.5)
+		trimmed_cat['e_mags'] = np.abs(magerrs)
+
+		trimmed_cat.write('catalogs/derived/eboss_lss_new.fits', format='fits', overwrite=True)
 
 	# write properties to an XDQSO photometric catalog
 	else:
 		if speczs:
 			qso_cat = Table(fits.open('catalogs/derived/xdqso_specz.fits')[1].data)
 		else:
-			qso_cat = Table(fits.open('catalogs/derived/xdqso-z-cat.fits')[1].data)
+			qso_cat = Table(fits.open('catalogs/SDSS_QSOs/xdqso-z-cat.fits')[1].data)
 
 		zkey = 'Z'
 		goodzs = ((qso_cat[zkey] > 0) & (qso_cat[zkey] < 5.494))
-		goodprobs = (qso_cat['PQSO'] > 0.8)
+
+		goodprobs = (qso_cat['PQSO'] > 0.2)
 		goodwise = (qso_cat['PSFFLUX'][:, 11] > 0) & (qso_cat['PSFFLUX'][:, 12] > 0)
+
 
 		"""good_idxs = np.where((qso_cat['NPEAKS'] == 1) & (qso_cat['bright_star'] == False) &
 			(qso_cat['bad_u'] == False) & (qso_cat['bad_field'] == False) &
@@ -230,25 +310,35 @@ def write_properties(sample, speczs=False):
 
 		trimmed_cat = qso_cat[good_idxs]
 
-		i_maggies = trimmed_cat['PSFFLUX'][:, band_idxs['i']] / 1e9
-		i_mags = -2.5 / np.log(10.) * (
-					np.arcsinh(i_maggies / (2 * bsoftpars[band_idxs['i']])) + np.log(bsoftpars[band_idxs['i']]))
-		dered_i_mags = i_mags - trimmed_cat['EXTINCTION'][:, band_idxs['i']]
+		psfmaggies = np.array(trimmed_cat['PSFFLUX'] / 1e9) * vega_to_ab
+		psfmags = -2.5 / np.log(10.) * (
+					np.arcsinh(psfmaggies / (2 * bsoftpars)) + np.log(bsoftpars))
+		deredmags = psfmags - trimmed_cat['EXTINCTION']
 
-		g_maggies = trimmed_cat['PSFFLUX'][:, band_idxs['g']] / 1e9
-		g_mags = -2.5 / np.log(10.) * (
-					np.arcsinh(g_maggies / (2 * bsoftpars[band_idxs['g']])) + np.log(bsoftpars[band_idxs['g']]))
-		dered_g_mags = g_mags - trimmed_cat['EXTINCTION'][:, band_idxs['g']]
+		magerrs = 1/(trimmed_cat['PSFFLUX'] * np.sqrt(trimmed_cat['PSFFLUX_IVAR']))
 
-		i_abs_mags = k_correct_richards(dered_i_mags, trimmed_cat[zkey])
+		w1_nu_f_nu = np.array(309.54 * trimmed_cat['PSFFLUX'][:, 11]/1e9 * (con.c/(3.368*u.micron)).to('Hz').value)
+		w2_nu_f_nu = np.array(171.787 * trimmed_cat['PSFFLUX'][:, 12]/1e9 * (con.c/(4.618*u.micron)).to('Hz').value)
+
+
+		i_abs_mags = k_correct_richards(deredmags[:, 3], trimmed_cat[zkey])
+
+		trimmed_cat['deredmags'] = deredmags
+
+		trimmed_cat['e_mags'] = np.abs(magerrs)
 
 		trimmed_cat['myMI'] = i_abs_mags
-		trimmed_cat['g-i'] = (dered_g_mags - dered_i_mags)
-		trimmed_cat['logL1.5'] = wise_tools.rest_ir_lum(trimmed_cat['PSFFLUX'][:, 11], trimmed_cat['PSFFLUX'][:, 12],
+		trimmed_cat['g-i'] = (deredmags[:, 1] - deredmags[:, 3])
+		trimmed_cat['i-z'] = (deredmags[:, 3] - deredmags[:, 4])
+		trimmed_cat['logL1_5'] = wise_tools.rest_ir_lum(np.array([w1_nu_f_nu, w2_nu_f_nu]),
 		                                                trimmed_cat[zkey], 1.5)
-		trimmed_cat['W1_MAG'] = 22.5 - 2.5 * np.log10(trimmed_cat['PSFFLUX'][:, 11])
-		trimmed_cat['W2_MAG'] = 22.5 - 2.5 * np.log10(trimmed_cat['PSFFLUX'][:, 12])
-		trimmed_cat['i_mag'] = dered_i_mags
+
+		if speczs:
+			w3_nu_f_nu = np.array(
+				31.674 * 10 ** (-trimmed_cat['W3mag_aw'] / 2.5) * (con.c / (12.082 * u.micron)).to('Hz').value)
+			trimmed_cat['logL6'] = wise_tools.rest_ir_lum(np.array([w1_nu_f_nu, w2_nu_f_nu, w3_nu_f_nu]),
+			                                              trimmed_cat[zkey], 6)
+
 
 		vdb = False
 		if vdb:
@@ -280,15 +370,117 @@ def match_lss_dr16():
 	fintable.write('catalogs/lss/eBOSS_NGC_phot.fits', format='fits', overwrite=True)
 
 
+def relative_colors(tab, firstband='g', secondband='i', middlemode='median'):
+	zs = np.copy(tab['Z'])
+	colorlist = np.copy(tab['deredmags'][:, band_idxs[firstband]] - tab['deredmags'][:, band_idxs[secondband]])
+	color_errs = np.sqrt((tab['e_mags'][:, band_idxs[firstband]])**2 + (tab['e_mags'][:, band_idxs[secondband]])**2)
 
-def luminosity_complete_cut(qso_cat_name, lumcut, minz, maxz, plots, magcut=100, pcut=0.9, peakscut=1, apply_planck_mask=True):
+	# bin redshift into 50 bins
+	z_quantile_bins = pd.qcut(zs, 30, retbins=True)[1]
+
+	clip = True
+	vdblist, medzbins = [], []
+	if middlemode == 'median':
+		# loop over redshift bins
+		for i in range(len(z_quantile_bins) - 1):
+			in_z_bin = (zs < z_quantile_bins[i + 1]) & (zs >= z_quantile_bins[i])
+			idxs_in_bin = np.where(in_z_bin)
+			if clip:
+				medcolor = astrostats.sigma_clipped_stats(colorlist[idxs_in_bin], sigma_upper=0.5)[1]
+			else:
+				medcolor = np.median(colorlist[idxs_in_bin])
+			medz = np.median(zs[in_z_bin])
+			vdblist.append(spectrumtools.vdb_color_at_z(medz, 0) - medcolor)
+			medzbins.append(medz)
+
+			colorlist[idxs_in_bin] = colorlist[idxs_in_bin] - medcolor
+
+	# calculate colors relative to the modal color at a given redshift, which should be unaffected by reddening
+	# calculate mode by summing gaussians centered at observed colors, with widths given by color errors
+	elif middlemode == 'mode':
+		colorgrid = np.linspace(-1, 2, 1000)
+
+
+
+		# loop over redshift bins
+		for i in range(len(z_quantile_bins) - 1):
+			in_z_bin = (zs < z_quantile_bins[i + 1]) & (zs >= z_quantile_bins[i])
+			idxs_in_bin = np.where(in_z_bin)
+			gminis_in_bin = colorlist[idxs_in_bin]
+
+			gausses = []
+			for j in range(len(gminis_in_bin)):
+
+				gausses.append(gaussian(colorgrid, gminis_in_bin[j], color_errs[idxs_in_bin][j]))
+			gauss_sum = np.sum(gausses, axis=0)
+			modecolor = colorgrid[gauss_sum.argmax()]
+
+			#roundcolors = np.around(gminis[idxs_in_bin], 3)
+
+			#modecolor = stats.mode(roundcolors)[0]
+
+			colorlist[idxs_in_bin] = colorlist[idxs_in_bin] - modecolor
+	else:
+		return 'wrong mode'
+	np.array(vdblist).dump('vdbcorrection.npy')
+	np.array(medzbins).dump('medzbins.npy')
+
+	return colorlist
+
+def select_dust_reddened_qsos(tab):
+
+	zlinspace = np.linspace(np.min(tab['Z']), np.max(tab['Z']), 50)
+	relcolors = []
+	for z in zlinspace:
+		relcolors.append(spectrumtools.relative_vdb_color(z, ebv=0.08)-0.05)
+	fit = np.polyfit(zlinspace, relcolors, 10)
+	linmod = np.polyval(fit, tab['Z'])
+	tab['colorbin'] = np.zeros(len(tab))
+	offset_diff = tab['deltagmini'] - linmod
+	tab['colorbin'][np.where(offset_diff > 0)] = -1.
+	return tab
+
+def mateos_cut(table):
+	allwise_idxs = (table['e_W1mag_cw'] < 0.2) & (table['e_W2mag_cw'] < 0.2) & (table['e_W3mag_aw'] < 0.3)
+	allwise_tab = table[allwise_idxs]
+	w1, w2, w3 = allwise_tab['W1mag_cw'], allwise_tab['W2mag_cw'], allwise_tab['W3mag_aw']
+
+	x = w2 - w3
+	y = w1 - w2
+
+	lowlim = 0.315*x - 0.222
+	highlim = 0.315*x + 0.796
+
+	leftlim = -3.172 * x + 7.264
+
+	inbox = (y <= highlim) & (y >= lowlim) & (y >= leftlim)
+
+	boxtab = allwise_tab[inbox]
+	boxtab['PQSO'] = np.ones(len(boxtab))
+	return boxtab
+
+
+
+def luminosity_complete_cut(qso_cat_name, lumcut, minz, maxz, plots, magcut=100, pcut=0.9, peakscut=1, apply_planck_mask=True, band='i', colorkey='g-i'):
 	qso_cat = Table(fits.open('catalogs/derived/%s_new.fits' % qso_cat_name)[1].data)
+	#qso_cat = mateos_cut(qso_cat)
+
 
 	zkey = 'Z'
+	firstband, secondband = colorkey.split('-')[0], colorkey.split('-')[1]
 
 	# if a photometric catalog, make cuts on flags, probability, and number of redshift peaks
-	if (qso_cat_name == 'xdqso') or (qso_cat_name == 'xdqso_specz'):
-		qso_cat = qso_cat[np.where((qso_cat['GOOD'] == 0) & (qso_cat['PQSO'] >= pcut) & (qso_cat['NPEAKS'] <= peakscut) & (qso_cat['NPEAKS'] > 0))]
+	"""if (qso_cat_name == 'xdqso') or (qso_cat_name == 'xdqso_specz'):
+		qso_cat = qso_cat[np.where((qso_cat['GOOD'] == 0) & (qso_cat['PQSO'] >= pcut) & (qso_cat['BAD_FIELD'] == 0) &
+		                           (qso_cat['NPEAKS'] <= peakscut) & (qso_cat['NPEAKS'] > 0) & (qso_cat['e_mags'][:, band_idxs[firstband]] < 0.33)
+		                            & (qso_cat['e_mags'][:, band_idxs[secondband]] < 0.1) & (qso_cat['PEAKFWHM'] < 0.75))]"""
+	# & (qso_cat['BRIGHT_STAR'] == 0)
+	qso_cat = qso_cat[np.where((qso_cat['PEAKPROB'] == 1) & (qso_cat['PEAKFWHM'] == 0) & (qso_cat['e_mags'][:, band_idxs[secondband]] < 0.2))]
+
+	#eboss_mask = pymangle.Mangle('footprints/eBOSS_QSOandLRG_fullfootprintgeometry_noveto.ply')
+	#goodixs = eboss_mask.contains(qso_cat['RA'], qso_cat['DEC'])
+	#qso_cat = qso_cat[goodixs]
+
 
 	# removes QSOs which fall inside mask for Planck lensing, which you can't use anyways
 	if apply_planck_mask:
@@ -297,25 +489,25 @@ def luminosity_complete_cut(qso_cat_name, lumcut, minz, maxz, plots, magcut=100,
 		outsidemaskbool = (map4stack[hp.ang2pix(2048, ls, bs, lonlat=True)] != hp.UNSEEN)
 		qso_cat = qso_cat[np.where(outsidemaskbool)]
 
+	z_cut_tab = qso_cat[np.where((qso_cat['Z'] >= minz) & (qso_cat['Z'] <= maxz))]
+
+	#z_cut_tab['delta%smin%s' % (firstband, secondband)] = relative_colors(z_cut_tab, firstband=firstband,
+	#                                                                      secondband=secondband, middlemode='mode')
+	#z_cut_tab['deltagmini'] = relative_colors(z_cut_tab, firstband='g', secondband='i', middlemode='mode')
+
+
+
+	#z_cut_tab = select_dust_reddened_qsos(z_cut_tab)
+
 	#
-	i_app = qso_cat['i_mag']
-	# cut on absolute or apparent magnitude, and/or redshift
-	complete_cut = np.where((qso_cat['myMI'] <= lumcut) & (qso_cat['myMI'] > -100) & (qso_cat[zkey] >= minz) & (qso_cat[zkey] <= maxz) & (
-					i_app < magcut))
-	t = qso_cat[complete_cut]
+	if band == 'i':
+		i_app = z_cut_tab['deredmags'][:, 3]
+		# cut on absolute or apparent magnitude, and/or redshift
+		complete_cut = np.where((z_cut_tab['myMI'] <= lumcut) & (z_cut_tab['myMI'] > -100) & (i_app < magcut))
+	elif band == '1.5':
+		complete_cut = np.where((z_cut_tab['logL1_5'] >= lumcut))
+	t = z_cut_tab[complete_cut]
 
-
-	gminis = np.copy(t['g-i'])
-	# bin redshift into 50 bins
-	z_quantile_bins = pd.qcut(t[zkey], 50, retbins=True)[1]
-
-	# loop over redshift bins
-	for i in range(len(z_quantile_bins) - 1):
-		in_z_bin = (t['Z'] < z_quantile_bins[i + 1]) & (t['Z'] >= z_quantile_bins[i])
-		idxs_in_bin = np.where(in_z_bin)
-		medcolor = np.median(gminis[idxs_in_bin])
-		gminis[idxs_in_bin] = gminis[idxs_in_bin] - medcolor
-	t['deltagmini'] = gminis
 
 
 
@@ -334,53 +526,21 @@ def luminosity_complete_cut(qso_cat_name, lumcut, minz, maxz, plots, magcut=100,
 			limMs = magcut - 5 * np.log10(newdists / (10 * u.pc)) - kcorrects
 		else:
 			limMs = np.zeros(20)
-
-		plotting.MI_vs_z(qso_cat[zkey], qso_cat['myMI'], len(complete_cut[0]), magcut, minz, maxz, lumcut, qso_cat_name, limMs)
-		plotting.w1_minus_w2_plot(t['W1_MAG'], t['W2_MAG'], qso_cat_name)
+		if band == 'i':
+			plotting.MI_vs_z(qso_cat[zkey], qso_cat['myMI'], len(complete_cut[0]), magcut, minz, maxz, lumcut, qso_cat_name, limMs)
+		elif band == '1.5':
+			plotting.plot_lum_vs_z(qso_cat[zkey], qso_cat['logL1_5'], len(complete_cut[0]), minz=minz, maxz=maxz, lumcut=lumcut, qso_cat_name=qso_cat_name)
+		#plotting.w1_minus_w2_plot(t['W1_MAG'], t['W2_MAG'], qso_cat_name)
 
 	t.write('catalogs/derived/%s_complete.fits' % qso_cat_name, format='fits', overwrite=True)
 
+	#if plots:
+		#plotting.color_hist(qso_cat_name, colorkey=colorkey)
 
 
-# calculate weights to control for quasar luminosity
-# weight each sample down to the minimum of all samples
-def lum_weights(lums_arr, minlum, maxlum, bins, colorbin=0):
-
-	# the luminosities of the color in question
-	lumset = lums_arr[colorbin]
-
-	# calculate luminosity histograms for all samples
-	hists = []
-	for i in range(len(lums_arr)):
-		thishist = np.histogram(lums_arr[i], bins=bins, range=(minlum, maxlum), density=True)
-		hists.append(thishist[0])
-		if i == 0:
-			bin_edges = thishist[1]
-	hists = np.array(hists)
-	# the minimum in each bin
-	min_in_bins = np.amin(hists, axis=0)
-	# weight down to the minimum in each bin
-	dist_ratio = min_in_bins / hists[0]
-	# set nans to zero
-	dist_ratio[np.where(np.isnan(dist_ratio) | np.isinf(dist_ratio))] = 0
-
-	weights = np.zeros(len(lumset))
-
-	for i in range(len(dist_ratio)):
-		idxs_in_bin = np.where((lumset <= bin_edges[i + 1]) & (lumset > bin_edges[i]))
-		weights[idxs_in_bin] = dist_ratio[i]
-
-	return weights
 
 
-# multiply luminosity weights by probability weights
-def convolved_weights(pqso_weights, lum_arr, minlum, maxlum, bins, colorbin=0):
 
-	l_weights = lum_weights(lum_arr, minlum, maxlum, bins, colorbin=colorbin)
-
-	totweights = pqso_weights * l_weights
-
-	return totweights
 
 
 def remove_reddest_bin(colors, zs, nbins, offset):
@@ -402,52 +562,16 @@ def remove_reddest_bin(colors, zs, nbins, offset):
 
 
 
-def bin_by_color(colors, zs, nbins, offset, rgb=None, nzbins=100):
-	if rgb is not None:
-		nbins = 20
-	# make empty list of lists
-	gminusibinidxs = []
-	for k in range(nbins):
-		gminusibinidxs.append([])
-
-	# choose to bin up by color or by color offset
-	if offset:
-
-		offsetbins = pd.qcut(colors, nbins, retbins=True)[1]
-		for j in range(nbins):
-			gminusibinidxs[j] += list(
-				np.where((colors < offsetbins[j + 1]) & (colors >= offsetbins[j]))[0])
-	else:
-
-		z_quantile_bins = pd.qcut(zs, nzbins, retbins=True)[1]
-
-		# loop over redshift bins
-		for i in range(len(z_quantile_bins) - 1):
-			in_z_bin = (zs < z_quantile_bins[i + 1]) & (zs >= z_quantile_bins[i])
-			idxs_in_bin = np.where(in_z_bin)
-			gminusi_in_bin = colors[idxs_in_bin]
-
-			color_bins = pd.qcut(gminusi_in_bin, nbins, retbins=True)[1]
-			for j in range(nbins):
-				gminusibinidxs[j] += list(
-					np.where((colors < color_bins[j + 1]) & (colors >= color_bins[j]) & in_z_bin)[0])
-	if rgb == 'b':
-		return np.array(sum(gminusibinidxs[:3], []))
-	elif rgb == 'c':
-		return np.array(sum(gminusibinidxs[5:15], []))
-	elif rgb == 'r':
-		return np.array(sum(gminusibinidxs[17:], []))
-	else:
-		return gminusibinidxs
 
 
-def red_blue_samples(qso_cat_name, plots, offset=False, remove_reddest=False):
+
+def red_blue_samples(qso_cat_name, plots, ncolorbins, offset=False, remove_reddest=False, colorkey='g-i', lumkey='logL1_5'):
 
 
 	if offset:
 		colorkey = 'deltagmini'
 	else:
-		colorkey = 'g-i'
+		colorkey = colorkey
 	if qso_cat_name == 'dr14':
 		qso_cat = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data
 
@@ -461,82 +585,74 @@ def red_blue_samples(qso_cat_name, plots, offset=False, remove_reddest=False):
 		qso_cat = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data
 
 	if remove_reddest:
-		#qso_cat = qso_cat[remove_reddest_bin(qso_cat[colorkey], qso_cat['Z'], 10, offset)]
-		redtailcat = Table(qso_cat[np.where(qso_cat['deltagmini'] >= 0.25)])
-		redtailcat.write('catalogs/derived/%s_%s_redtail.fits', format='fits', overwrite=True)
-		if plots:
-			plotting.color_hist(qso_cat_name, offset=True)
-		qso_cat = qso_cat[np.where(qso_cat['deltagmini'] < 0.25)]
+		nonred_tab = Table(qso_cat[np.where(qso_cat['colorbin'] == 0)])
+		reddenedtab = Table(qso_cat[np.where(qso_cat['colorbin'] == -1)])
+		# change this?
+		reddenedtab['weight'] = np.ones(len(reddenedtab))
+	else:
+		nonred_tab = Table(qso_cat)
+		nonred_tab['colorbin'] = np.zeros(len(nonred_tab))
 
 
-	colors = qso_cat[colorkey]
-	zs = qso_cat['Z']
-	qso_tab = Table(qso_cat)
-	qso_tab['colorbin'] = np.zeros(len(qso_tab))
-	qso_tab['weight'] = np.zeros(len(qso_tab))
 
-	indicesbycolor = bin_by_color(colors, zs, 10, offset)
-	lumlist = []
+	firstband, secondband = colorkey.split('-')[0], colorkey.split('-')[1]
+
+	colors = nonred_tab['deredmags'][:, band_idxs[firstband]] - nonred_tab['deredmags'][:, band_idxs[secondband]]
+
+
+	zs = nonred_tab['Z']
+	minz, maxz = np.min(zs), np.max(zs)
+
+	nonred_tab['weight'] = np.zeros(len(nonred_tab))
+
+
+	indicesbycolor = binning.bin_by_color(colors, zs, ncolorbins, offset)
+	#indicesbycolor = bin_by_Av(nonred_tab, ncolorbins)
+	lumlist, zslist = [], []
 	for j in range(len(indicesbycolor)):
-		qso_tab['colorbin'][indicesbycolor[j]] = j+1
-		lumlist.append(qso_tab['logL1.5'][indicesbycolor[j]])
+		nonred_tab['colorbin'][indicesbycolor[j]] = j+1
+		lumlist.append(nonred_tab[lumkey][indicesbycolor[j]])
+		zslist.append(nonred_tab['Z'][indicesbycolor[j]])
+
+	if remove_reddest:
+		qso_tab = vstack([nonred_tab, reddenedtab])
+	else:
+		qso_tab = nonred_tab
+
 
 	bluetab = qso_tab[np.where(qso_tab['colorbin'] == 1)]
-	ctrltab = qso_tab[np.where((qso_tab['colorbin']==5) | (qso_tab['colorbin'] == 6))]
-	redtab = qso_tab[np.where(qso_tab['colorbin'] == 10)]
+	ctrltab = qso_tab[np.where((qso_tab['colorbin'] == round(ncolorbins/2)))]
+	redtab = qso_tab[np.where(qso_tab['colorbin'] == ncolorbins)]
 
-	"""bluetab = Table(qso_cat[bin_by_color(colors, zs, 20, offset, rgb='b')])
-	ctrltab = Table(qso_cat[bin_by_color(colors, zs, 20, offset, rgb='c')])
-	redtab = Table(qso_cat[bin_by_color(colors, zs, 20, offset, rgb='r')])
+	qso_tab['%s' % colorkey] = colors
 
-	lumhistbins = 100
-
-	if (qso_cat_name == 'dr14') or (qso_cat_name == 'dr16') or (qso_cat_name == 'eboss_lss'):
-		bluetab['weight'] = lum_weights([bluetab['logL1.5'], ctrltab['logL1.5'], redtab['logL1.5']], 18, 28, lumhistbins)
-		ctrltab['weight'] = lum_weights([ctrltab['logL1.5'], redtab['logL1.5'], bluetab['logL1.5']], 18, 28, lumhistbins)
-		redtab['weight'] = lum_weights([redtab['logL1.5'], ctrltab['logL1.5'], bluetab['logL1.5']], 18, 28, lumhistbins)
+	if 'xd' in qso_cat_name:
+		qso_tab['weight'] = weighting.convolved_weights(qso_tab['PQSO'], len(qso_tab), indicesbycolor, lumlist, zslist, 40, 50, minz, maxz, 50, 20)
 	else:
-		bluetab['weight'] = convolved_weights(bluetab['PQSO'], [bluetab['logL1.5'], ctrltab['logL1.5'], redtab['logL1.5']], 18, 28, lumhistbins)
-		ctrltab['weight'] = convolved_weights(ctrltab['PQSO'], [ctrltab['logL1.5'], redtab['logL1.5'], bluetab['logL1.5']], 18, 28, lumhistbins)
-		redtab['weight'] = convolved_weights(redtab['PQSO'], [redtab['logL1.5'], ctrltab['logL1.5'], bluetab['logL1.5']], 18, 28, lumhistbins)
+		qso_tab['weight'] = weighting.lum_z_2d_weights(indicesbycolor, len(qso_tab), lumlist, zslist, 40, 50, minz, maxz, 50, 20)
 
-	ctrltab.write('catalogs/derived/%s_ctrl.fits' % qso_cat_name, format='fits', overwrite=True)
-	bluetab.write('catalogs/derived/%s_blue.fits' % qso_cat_name, format='fits', overwrite=True)
-	redtab.write('catalogs/derived/%s_red.fits' % qso_cat_name, format='fits', overwrite=True)"""
-
-	if plots:
-		plotting.g_minus_i_plot(qso_cat_name, offset)
-		if remove_reddest:
-			plotting.lum_dists(qso_cat_name, 100, bluetab['logL1.5'], ctrltab['logL1.5'], redtab['logL1.5'], redtailcat['logL1.5'])
-		plotting.z_dists(qso_cat_name, bluetab['Z'], ctrltab['Z'], redtab['Z'])
-
-	for j in range(len(indicesbycolor)):
-		colortab = qso_tab[indicesbycolor[j]]
-		qso_tab['weight'][indicesbycolor[j]] = convolved_weights(colortab['PQSO'], lumlist, 18, 28, 100, colorbin=j)
+	"""for j in range(len(indicesbycolor)):
+		if (qso_cat_name == 'dr14') or (qso_cat_name == 'dr16'):
+			qso_tab['weight'][indicesbycolor[j]] = lum_weights(lumlist, 21, 26, 100, colorbin=j)
+		else:
+			colortab = qso_tab[indicesbycolor[j]]
+			qso_tab['weight'][indicesbycolor[j]] = convolved_weights(colortab['PQSO'], indicesbycolor, lumlist, zslist, 40, 50, minz, maxz, 30, 20, colorbin=j)
+			#qso_tab['weight'][indicesbycolor[j]] = lum_z_2d_weights(lumlist, zslist, 40, 50, minz, maxz, 50, 20, colorbin=j)"""
 
 	qso_tab.write('catalogs/derived/%s_colored.fits' % qso_cat_name, format='fits', overwrite=True)
 
+	if plots:
+		plotting.g_minus_i_plot(qso_cat_name, offset)
+		plotting.color_v_z(qso_cat_name, colorkey)
+
+		plotting.lum_dists(qso_cat_name, 100, bluetab[lumkey], ctrltab[lumkey], redtab[lumkey])
+		plotting.z_dists(qso_cat_name, bluetab['Z'], ctrltab['Z'], redtab['Z'])
 
 
-# take coordinates from 2 surveys with different footprints and return indices of sources within the overlap of both
-def match_footprints(testsample, reference_sample, nside=32):
-	ras1, decs1 = testsample[0], testsample[1]
-	ras2, decs2 = reference_sample[0], reference_sample[1]
 
-	footprint1_pix = hp.ang2pix(nside=nside, theta=ras1, phi=decs1, lonlat=True)
-	footprint2_pix = hp.ang2pix(nside=nside, theta=ras2, phi=decs2, lonlat=True)
-	commonpix = np.intersect1d(footprint1_pix, footprint2_pix)
-	commonfootprint = np.zeros(hp.nside2npix(nside))
-	commonfootprint[commonpix] = 1
-	idxs = np.where(commonfootprint[footprint1_pix])
-	#idxs2 = np.where(commonfootprint[footprint2_pix])
 
-	#sample1out = (ras1[idxs1], decs1[idxs1])
-	#sample2out = (ras2[idxs2], decs2[idxs2])
 
-	#return (sample1out, sample2out)
 
-	return idxs
 
 
 def first_matched(qso_cat_name):
@@ -554,9 +670,11 @@ def first_matched(qso_cat_name):
 
 
 
-def radio_detect_fraction(qso_cat_name, radio_name='FIRST', lowmag=10, highmag=30, return_plot=False, bins=10, offset=False):
-	qso_cat = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data
+def radio_detect_fraction(qso_cat_name, colorkey, radio_name='FIRST', lowmag=10, highmag=30, return_plot=False, offset=False):
+
+	#qso_cat = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data
 	#qso_cat = fits.open('QSO_cats/dr7_bh_Nov19_2013.fits')[1].data
+	qso_cat = fits.open('catalogs/derived/%s_colored.fits' % qso_cat_name)[1].data
 
 	if radio_name == 'FIRST':
 		radrakey, raddeckey = 'RA', 'DEC'
@@ -574,8 +692,8 @@ def radio_detect_fraction(qso_cat_name, radio_name='FIRST', lowmag=10, highmag=3
 	radiocoords = SkyCoord(ra=radio_cat[radrakey] * u.deg, dec=radio_cat[raddeckey] * u.deg)
 
 
-	qso_cat = qso_cat[match_footprints((qso_cat['RA'], qso_cat['DEC']), (radio_cat[radrakey], radio_cat[raddeckey]), nside=256)]
-	qso_cat = qso_cat[np.where((qso_cat['i_mag'] < highmag) & (qso_cat['i_mag'] > lowmag))]
+	qso_cat = qso_cat[healpixhelper.match_footprints((qso_cat['RA'], qso_cat['DEC']), (radio_cat[radrakey], radio_cat[raddeckey]), nside=256)]
+	qso_cat = qso_cat[np.where((qso_cat['deredmags'][:, 3] < highmag) & (qso_cat['deredmags'][:, 3] > lowmag))]
 
 
 	if offset:
@@ -584,22 +702,31 @@ def radio_detect_fraction(qso_cat_name, radio_name='FIRST', lowmag=10, highmag=3
 		colors = qso_cat['g-i']
 	zs = qso_cat['Z']
 
-	gminusibinidxs = bin_by_color(colors, zs, bins, offset)
+	#gminusibinidxs = bin_by_color(colors, zs, bins, offset)
 
 	radio_detect_frac = []
-	for i in range(bins):
-		binnedcat = qso_cat[gminusibinidxs[i]]
+	for i in range(int(np.max(qso_cat['colorbin']))):
+
+		binnedcat = qso_cat[np.where(qso_cat['colorbin'] == (i+1))]
+
+		# try to match in bolometric luminosity
+		# use luminosity weights as probabilities to randomly draw from each sample such that all samples should
+		# represent same luminosity distribution
+		normed_weights = binnedcat['weight']/np.sum(binnedcat['weight'])
+		binnedcat = binnedcat[np.random.choice(len(binnedcat), len(binnedcat), p=normed_weights)]
+
 		coordsinbin = SkyCoord(ra=binnedcat['RA'] * u.deg, dec=binnedcat['DEC'] * u.deg)
 		firstidxs, binidxs, d2d, d3d = coordsinbin.search_around_sky(radiocoords, 10 * u.arcsec)
 		radio_detect_frac.append(len(firstidxs)/len(binnedcat))
 
-	plotting.radio_detect_frac_plot(radio_detect_frac, surv_name=radio_name, return_plot=return_plot)
+	plotting.radio_detect_frac_plot(radio_detect_frac, colorkey, surv_name=radio_name, return_plot=return_plot)
 
 # bin up sample into bins of color or color offset, and stack FIRST images in each bin
 # this stack can be used to estimate the median flux, median radio luminosity, or median radio loudness of each bin
-def median_radio_flux_for_color(qso_cat_name, bins=10, mode='flux', remove_detections=False, minz=0, maxz=10, minL=21, maxL=26, nbootstraps=0, offset=False, remove_reddest=False):
+def median_radio_flux_for_color(qso_cat_name, colorkey, mode='flux', remove_detections=False, minz=0, maxz=10, minL=40, maxL=50, nbootstraps=0, offset=False, remove_reddest=False):
 	import first_stacking
-	qso_cat = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data
+	#qso_cat = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data
+	qso_cat = fits.open('catalogs/derived/%s_colored.fits' % qso_cat_name)[1].data
 
 	# can choose to remove FIRST detections so not to bias the median stacks
 	if remove_detections:
@@ -612,56 +739,48 @@ def median_radio_flux_for_color(qso_cat_name, bins=10, mode='flux', remove_detec
 
 	# make cuts on redshift and/or bolometric luminosity if desired
 	qso_cat = qso_cat[np.where((qso_cat['Z'] > minz) & (qso_cat['Z'] < maxz))]
-	qso_cat = qso_cat[np.where((qso_cat['logL1.5'] > minL) & (qso_cat['logL1.5'] < maxL))]
-
-	if offset:
-		colorkey = 'deltagmini'
-	else:
-		colorkey = 'g-i'
+	qso_cat = qso_cat[np.where((qso_cat['logL1_5'] > minL) & (qso_cat['logL1_5'] < maxL))]
 
 
 
-	reddest_cat = qso_cat[np.where(qso_cat['deltagmini'] > 0.25)]
-	qso_cat = qso_cat[np.where(qso_cat['deltagmini'] < 0.25)]
 
-	gminusibinidxs = bin_by_color(qso_cat[colorkey], qso_cat['Z'], bins, offset)
+	#reddest_cat = qso_cat[np.where(qso_cat['deltagmini'] > 0.25)]
+	#qso_cat = qso_cat[np.where(qso_cat['deltagmini'] < 0.25)]
 
-	medcolors, median_radioflux_in_bins, medLbols, medradlum, medradloudness, boot_errs = [], [], [], [], [], []
+	#gminusibinidxs = bin_by_color(qso_cat[colorkey], qso_cat['Z'], bins, offset)
 
-	if remove_reddest:
-		niter = bins
-	else:
-		niter = bins+1
+	median_radioflux_in_bins, medLbols, medradlum, medradloudness, boot_errs = [], [], [], [], []
+	medcolors = np.linspace(0, 1, int(np.max(qso_cat['colorbin'])))
 
-	for i in range(niter):
-		if i==bins:
-			binnedcat = reddest_cat
-		else:
-			binnedcat = qso_cat[gminusibinidxs[i]]
+
+	for i in range(int(np.max(qso_cat['colorbin']))):
+		#if i==bins:
+		#	binnedcat = reddest_cat
+		#else:
+		#	binnedcat = qso_cat[gminusibinidxs[i]]
 		#binnedcat = qso_cat[gminusibinidxs[i]]
-		medcolors.append(np.median(binnedcat['deltagmini']))
+		binnedcat = qso_cat[np.where(qso_cat['colorbin'] == (i+1))]
+		#medcolors.append(np.median(binnedcat['deltagminz']))
 		stacked_flux = np.max(first_stacking.median_stack(binnedcat['OBJID_XDQSO']))
 		median_radioflux_in_bins.append(stacked_flux)
-		medLbol = np.median(binnedcat['logL1.5'])
+		medLbol = np.median(binnedcat['logL1_5'])
 		medLbols.append(medLbol)
 		medzinbin = np.median(binnedcat['Z'])
 		medlumdist = astropycosmo.luminosity_distance(medzinbin)
-		lumnu = ((4 * np.pi * (medlumdist ** 2) * (stacked_flux * u.Jy) / ((1 + medzinbin) ** (1 - 0.5))).to(
-			u.W / u.Hz)).value
+		lumnu = ((4 * np.pi * (medlumdist ** 2) * (stacked_flux * u.Jy) / ((1 + medzinbin) ** (1 - 0.5))).to('erg')).value
 		medradlum.append(lumnu)
-		medradloudness.append(np.log10((1.4e9*lumnu)/(2e14*(10**(medLbol)))))
+		medradloudness.append(np.log10((1.4e9*lumnu)/(10 ** medLbol)))
 
 		bootmedian_radio_in_bins, bootLbols = [], []
-		if nbootstraps>0:
+		if nbootstraps > 0:
 			for j in range(nbootstraps):
 				bootidxs = np.random.choice(len(binnedcat), len(binnedcat))
 				bootbinnedcat = binnedcat[bootidxs]
 				bootmedian_radio_in_bins.append(np.max(first_stacking.median_stack(bootbinnedcat['OBJID_XDQSO'])))
-				bootLbols.append(np.median(bootbinnedcat['logL1.5']))
+				bootLbols.append(np.median(bootbinnedcat['logL1_5']))
 			bootlumnu = (
-			(4 * np.pi * (medlumdist ** 2) * (bootmedian_radio_in_bins * u.Jy) / ((1 + medzinbin) ** (1 - 0.5))).to(
-				u.W / u.Hz)).value
-			radio_loudnesss = np.log10((1.4e9*bootlumnu)/(2e14*(10**(np.array(bootLbols)))))
+			(4 * np.pi * (medlumdist ** 2) * (bootmedian_radio_in_bins * u.Jy) / ((1 + medzinbin) ** (1 - 0.5))).to('erg')).value
+			radio_loudnesss = np.log10((1.4e9*bootlumnu)/(10**(np.array(bootLbols))))
 
 			if mode == 'flux':
 				boot_errs.append(np.std(bootmedian_radio_in_bins))
@@ -675,14 +794,14 @@ def median_radio_flux_for_color(qso_cat_name, bins=10, mode='flux', remove_detec
 
 	if mode == 'flux':
 		np.array([medcolors, median_radioflux_in_bins, boot_errs]).dump('plotting_results/first_flux_for_color.npy')
-		plotting.plot_median_radio_flux(remove_reddest=remove_reddest)
+		plotting.plot_median_radio_flux(colorkey, remove_reddest=remove_reddest)
 		return median_radioflux_in_bins
 	elif mode == 'lum':
 		np.array([medcolors, medradlum, boot_errs]).dump('plotting_results/first_lum_for_color.npy')
-		plotting.plot_median_radio_luminosity(remove_reddest=remove_reddest)
+		plotting.plot_median_radio_luminosity(colorkey, remove_reddest=remove_reddest)
 	elif mode == 'loud':
 		np.array([medcolors, medradloudness, boot_errs]).dump('plotting_results/first_loud_for_color.npy')
-		plotting.plot_radio_loudness(remove_reddest=remove_reddest)
+		plotting.plot_radio_loudness(colorkey, remove_reddest=remove_reddest)
 		return medradloudness, boot_errs
 
 
@@ -690,53 +809,105 @@ def median_radio_flux_for_color(qso_cat_name, bins=10, mode='flux', remove_detec
 def linear_model(x, a, b):
 	return a*x+b
 
-def kappa_for_color(qso_cat_name, bins=10, offset=False, removereddest=False):
-	qso_cat = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data
+def kappa_for_color(qso_cat_name, colorkey, bins=10, removereddest=False, dostacks=True, mission='planck', use_weights=True):
 
-	if offset:
-		colorkey = 'deltagmini'
-	else:
-		colorkey = 'g-i'
+
 	#if removereddest:
 		#qso_cat = qso_cat[remove_reddest_bin(qso_cat[colorkey], qso_cat['Z'], 10, offset)]
-	reddest_cat = qso_cat[np.where(qso_cat['deltagmini'] > 0.25)]
-	qso_cat = qso_cat[np.where(qso_cat['deltagmini'] < 0.25)]
+	#reddest_cat = qso_cat[np.where(qso_cat['colorbin'] == -1)]
+	#qso_cat = qso_cat[np.where(qso_cat['deltagmini'] < 0.25)]
 
+	qso_cat = fits.open('catalogs/derived/%s_colored.fits' % qso_cat_name)[1].data
+	#qso_cat = fits.open('catalogs/derived/dr16_bal.fits')[1].data
+	#gminusibinidxs = bin_by_color(qso_cat['g-i'], qso_cat['Z'], bins, offset=False)
 
-	gminusibinidxs = bin_by_color(qso_cat[colorkey], qso_cat['Z'], bins, offset)
+	kappas, errs, boots = [], [], []
+	colors = np.linspace(0, 1, bins)
+	masses = []
+	planck_kappas, act_kappas = [], []
 
-	colors, kappas, errs, boots = [], [], [], []
 	for i in range(bins):
-		binnedcat = qso_cat[gminusibinidxs[i]]
-		#colors.append(np.median(binnedcat[colorkey]))
-		colors.append(np.median(binnedcat['deltagmini']))
-		ras, decs = binnedcat['RA'], binnedcat['DEC']
-		stackkappa = stacking.fast_stack(ras, decs, hp.read_map('maps/smoothed_masked_planck.fits'), iterations=500, bootstrap=True)
-		if len(stackkappa) > 1:
-			kappas.append(stackkappa[0])
-			errs.append(np.std(stackkappa[1]))
-			boots.append(stackkappa[1])
+
+		binnedcat = qso_cat[np.where(qso_cat['colorbin'] == (i+1))]
+		if use_weights:
+			if 'xd' in qso_cat_name:
+				probweights = binnedcat['PQSO']
+			else:
+				probweights = None
+			weights = binnedcat['weight']
 		else:
-			kappas.append(stackkappa)
-			errs.append(0)
+			probweights, weights = None, None
+
+		if dostacks:
+
+			ras, decs = binnedcat['RA'], binnedcat['DEC']
+			if mission == 'planck':
+				planckkappa = stacking.fast_stack(ras, decs, hp.read_map('maps/smoothed_masked_planck.fits'), iterations=500, bootstrap=True, weights=weights, prob_weights=probweights)
+				kappas.append(planckkappa[0])
+				errs.append(np.std(planckkappa[1]))
+				act_kappas = None
+				planck_kappas = None
+			elif mission == 'act':
+				actkappa = stacking.fast_stack(ras, decs, hp.read_map('maps/both_ACT.fits'), iterations=500, bootstrap=True, weights=weights, prob_weights=probweights)
+				kappas.append(actkappa[0])
+				errs.append(np.std(actkappa[1]))
+				act_kappas = None
+				planck_kappas = None
+			else:
+				planckkappa = stacking.fast_stack(ras, decs, hp.read_map('maps/smoothed_masked_planck.fits'),
+				                                  iterations=500, bootstrap=True, weights=weights, prob_weights=probweights)
+
+				actkappa = stacking.fast_stack(ras, decs, hp.read_map('maps/both_ACT.fits'), iterations=500,
+				                               bootstrap=True, weights=weights, prob_weights=probweights)
+				planckvariance = np.var(planckkappa[1])
+				actvariance = np.var(actkappa[1])
+				avgd_kappa = np.average([planckkappa[0], actkappa[0]], weights=[1/planckvariance, 1/actvariance])
+				kappas.append(avgd_kappa)
+				planck_kappas.append(np.array([planckkappa[0], np.sqrt(planckvariance)]))
+				act_kappas.append(np.array([actkappa[0], np.sqrt(actvariance)]))
+				errs.append(np.sqrt(planckvariance+actvariance)/2)
+
+			"""if len(stackkappa) > 1:
+				kappas.append(stackkappa[0])
+				errs.append(np.std(stackkappa[1]))
+				boots.append(stackkappa[1])
+			else:
+				kappas.append(stackkappa)
+				errs.append(0)"""
+
+			#kappas_for_masses = np.linspace(0.0005, 0.005, 50)
+			#masses_for_kappas = lensingModel.kappa_mass_relation(binnedcat['Z'], kappas_for_masses)
+			#masses.append(np.interp(stackkappa[0], kappas_for_masses, masses_for_kappas))
+		else:
+			kap = np.load('peakkappas/%s_%s_kappa.npy' % (qso_cat_name, i), allow_pickle=True)
+			kappas.append(kap[0])
+			errs.append(kap[1])
+			boots.append(np.random.normal(kap[0], kap[1], 500))
+
+
+	#print(masses)
+	#return masses
+
 
 	linfit, pcov = curve_fit(linear_model, colors, kappas, sigma=errs)
 	print(linfit[0])
 
-	boots = np.array(boots)
+	"""boots = np.array(boots)
 	slopes = []
 	for i in range(len(boots[0])):
 		booted = boots[:, i]
 		poptboot, pcovboot = curve_fit(linear_model, colors, booted)
 		slopes.append(poptboot[0])
-	print(np.std(slopes))
+	print(np.std(slopes))"""
 
-	#spearmanranks = stats.spearmanr(colors, kappas)
-	#print(spearmanranks)
+	#kappas_for_masses = np.linspace(0.001, 0.004, 50)
+	#masses_for_kappas = lensingModel.kappa_mass_relation(qso_cat['Z'], kappas_for_masses)
+
+
+
 
 
 	if not removereddest:
-		#colors.append(np.median(reddest_cat[colorkey]))
 		colors.append(np.median(reddest_cat['deltagmini']))
 		kap = stacking.fast_stack(reddest_cat['RA'], reddest_cat['DEC'], hp.read_map('maps/smoothed_masked_planck.fits'), iterations=100, bootstrap=True)
 		if len(kap) > 1:
@@ -746,7 +917,9 @@ def kappa_for_color(qso_cat_name, bins=10, offset=False, removereddest=False):
 			kappas.append(kap)
 			errs.append(0)
 
-	plotting.plot_kappa_v_color(colors, kappas, errs, offset, remove_reddest=removereddest, linfit=linfit)
+	#plotting.plot_kappa_v_color(kappas, errs, transforms=[kappas_for_masses, masses_for_kappas], remove_reddest=removereddest, linfit=linfit)
+	plotting.plot_kappa_v_color(kappas, errs, colorkey, planck_kappas=planck_kappas, act_kappas=act_kappas,
+	                transforms=None, remove_reddest=removereddest, linfit=linfit)
 	return kappas
 
 
@@ -763,7 +936,7 @@ def temp_for_color(qso_cat_name, bins=10, offset=False, removereddest=False):
 	reddest_cat = qso_cat[np.where(qso_cat['deltagmini'] > 0.25)]
 	qso_cat = qso_cat[np.where(qso_cat['deltagmini'] < 0.25)]
 
-	gminusibinidxs = bin_by_color(qso_cat[colorkey], qso_cat['Z'], bins, offset)
+	gminusibinidxs = binning.bin_by_color(qso_cat[colorkey], qso_cat['Z'], bins, offset)
 
 	colors, kappas, errs = [], [], []
 	for i in range(bins):
@@ -808,7 +981,7 @@ def sed_for_color(qso_cat_name, bins=10, offset=False, removereddest=False):
 	reddest_cat = qso_cat[np.where(qso_cat['deltagmini'] > 0.25)]
 	qso_cat = qso_cat[np.where(qso_cat['deltagmini'] < 0.25)]
 
-	gminusibinidxs = bin_by_color(qso_cat[colorkey], qso_cat['Z'], bins, offset)
+	gminusibinidxs = binning.bin_by_color(qso_cat[colorkey], qso_cat['Z'], bins, offset)
 
 	colors, seds = [], []
 	for i in range(bins):
@@ -837,3 +1010,20 @@ def sed_for_color(qso_cat_name, bins=10, offset=False, removereddest=False):
 
 
 	plotting.plot_sed_v_color(seds, removereddest)
+
+def clustering_for_color(qso_cat_name, mode, cap, bins=10, minscale=-1, maxscale=0, use_weights=False):
+	n_samples = int(np.max(fits.open('catalogs/derived/%s_colored.fits' % qso_cat_name)[1].data['colorbin']))
+	samples = np.arange(n_samples)
+	samples = [0, n_samples - 1]
+	if mode == 'ang_cross':
+		for sample in samples:
+			autocorrelation.cross_correlation_function_angular(qso_cat_name, sample+1, nbins=bins, nbootstraps=10, nthreads=12, minscale=minscale, maxscale=maxscale)
+		plotting.plot_ang_cross_corr(qso_cat_name, bins, minscale, maxscale, samples)
+	elif mode == 'spatial_cross':
+		for sample in samples:
+			autocorrelation.cross_corr_func_spatial(qso_cat_name, sample+1, minscale, maxscale, cap, nbins=bins, nbootstraps=3, nthreads=12, useweights=use_weights)
+		plotting.plot_spatial_cross_corr(samples)
+	elif mode == 'spatial':
+		for j in range(n_samples):
+			autocorrelation.spatial_correlation_function(qso_cat_name, j+1, bins, nbootstraps=3, nthreads=12, useweights=True, minscale=minscale, maxscale=maxscale)
+		plotting.plot_spatial_correlation_function(bins, minscale, maxscale, n_samples)

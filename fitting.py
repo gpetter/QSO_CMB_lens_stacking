@@ -66,14 +66,10 @@ def fit_mass_to_peak(zdist, peakkappa, stdev=None):
 	return popt[0]
 
 
+# use stacks of noise maps to
+def annuli_errs(binsize=12, reso=1.5, maxtheta=180):
 
-def annuli_errs(color, mode, binsize=12, reso=1.5, maxtheta=180):
-	if mode == 'bootstrap':
-		names = sorted(glob.glob('bootstacks/*_%s.npy' % color))
-	elif mode == 'noise':
-		names = sorted(glob.glob('noise_stacks/*_%s.npy' % color))
-	elif mode == 'random':
-		names = sorted(glob.glob('random_stacks/*_%s.npy' % color))
+	names = sorted(glob.glob('noise_stacks/map*'))
 
 	noise_profiles = []
 	for i in range(len(names)):
@@ -316,10 +312,10 @@ def fit_gauss_hist_one_sided(data, xs, nbins):
 	histvals = histnp[0]
 	histbins = histnp[1]
 	histbins2 = histbins[:len(histbins) - 1]
-	lefthist = histvals[:histvals.argmax() + int(nbins/50)]
-	leftbins = histbins[:histvals.argmax() + int(nbins/50)]
+	lefthist = histvals[:histvals.argmax() + int(nbins/100)]
+	leftbins = histbins[:histvals.argmax() + int(nbins/100)]
 	maxval = np.max(histvals)
 	peakcolor = histbins[histvals.argmax()]
 
 	popt, pcov = curve_fit(gaussian, leftbins, lefthist, p0=[maxval, peakcolor, 0.1])
-	return gaussian(xs, popt[0], popt[1], popt[2])
+	return popt

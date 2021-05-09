@@ -5,16 +5,8 @@ from astropy.io import fits
 import importlib
 from astropy import units as u
 from astropy.coordinates import SkyCoord
-import glob
 import fileinput
 import sys
-import time
-from math import ceil
-import multiprocessing as mp
-from functools import partial
-from astropy.table import Table
-
-from astropy import coordinates
 import urllib3
 import glob
 urllib3.disable_warnings()
@@ -58,10 +50,101 @@ def stack_iteration(current_sum, current_weightsum, new_cutout, weight, prob_wei
 
 	return new_sum, new_weightsum
 
+
+def sum_projections(lon, lat, weights, prob_weights, imsize, reso, inmap, nstack):
+	running_sum, weightsum = np.zeros((imsize, imsize)), np.zeros((imsize, imsize))
+	for j in range(nstack):
+		azproj = hp.projector.AzimuthalProj(rot=[lon[j], lat[j]], xsize=imsize, reso=reso, lamb=True)
+		new_im = weights[j] * convergence_map.set_unseen_to_nan(azproj.projmap(inmap, vec2pix_func=newvec2pix))
+
+		running_sum, weightsum = stack_iteration(running_sum, weightsum, new_im, weights[j], prob_weights[j], imsize)
+
+	return running_sum, weightsum
+
+
+# for parallelization of stacking procedure, this method will stack a "chunk" of the total stack
+def stack_chunk(chunksize, nstack, lon, lat, inmap, weighting, prob_weights, imsize, reso, k):
+	# if this is the last chunk in the stack, the number of sources in the chunk probably won't be = chunksize
+	if (k * chunksize) + chunksize > nstack:
+		stepsize = nstack % chunksize
+	else:
+		stepsize = chunksize
+	highidx, lowidx = ((k * chunksize) + stepsize), (k * chunksize)
+
+	totsum, weightsum = sum_projections(lon[lowidx:highidx], lat[lowidx:highidx], weighting[lowidx:highidx], prob_weights[lowidx:highidx], imsize, reso, inmap, stepsize)
+
+	return totsum, weightsum
+
+
+# stack by computing an average iteratively. this method uses little memory but cannot be parallelized
+def stack_projections(ras, decs, weights=None, prob_weights=None, imsize=240, outname=None, reso=1.5, inmap=None, nstack=None, mode='normal', chunksize=500):
+	# if no weights provided, weights set to one
+	if weights is None:
+		weights = np.ones(len(ras))
+	if prob_weights is None:
+		prob_weights = np.ones(len(ras))
+	# if no limit to number of stacks provided, stack the entire set
+	if nstack is None:
+		nstack = len(ras)
+
+	lons, lats = equatorial_to_galactic(ras, decs)
+
+	if mode == 'normal':
+		totsum, weightsum = sum_projections(lons, lats, weights, prob_weights, imsize, reso, inmap, nstack)
+		finalstack = totsum/weightsum
+
+	else:
+		return
+
+	if outname is not None:
+		finalstack.dump('%s.npy' % outname)
+
+	return finalstack
+
+
+def fast_stack(ras, decs, inmap, weights=None, prob_weights=None, nsides=2048, iterations=500, bootstrap=False):
+	if weights is None:
+		weights = np.ones(len(ras))
+
+	outerkappa = []
+	lons, lats = equatorial_to_galactic(ras, decs)
+	inmap = convergence_map.set_unseen_to_nan(inmap)
+	pix = hp.ang2pix(nsides, lons, lats, lonlat=True)
+	neighborpix = hp.get_all_neighbours(nsides, pix)
+
+	centerkappa = inmap[pix]
+	neighborkappa = np.nanmean(inmap[neighborpix], axis=0)
+	centerkappa = np.nanmean([centerkappa, neighborkappa], axis=0)
+
+	weights[np.isnan(centerkappa)] = 0
+	centerkappa[np.isnan(centerkappa)] = 0
+
+
+	if prob_weights is not None:
+		true_weights_for_sum = weights * np.array(prob_weights)
+		weightsum = np.sum(true_weights_for_sum)
+	else:
+		weightsum = np.sum(weights)
+
+	centerstack = np.sum(weights * centerkappa) / weightsum
+
+
+	if iterations > 0:
+
+		for x in range(iterations):
+			bootidx = np.random.choice(len(lons), len(lons))
+			outerkappa.append(np.nanmean(inmap[hp.ang2pix(nsides, lons[bootidx], lats[bootidx], lonlat=True)]))
+
+		if bootstrap:
+			return centerstack, outerkappa
+		else:
+			return centerstack, np.nanstd(outerkappa)
+	else:
+		return centerstack
+
+# for a given sky position, choose which pre-calculated sky projection is centered closest to that position
 def find_closest_cutout(l, b, fixedls, fixedbs):
 	return np.argmin(hp.rotator.angdist([fixedls, fixedbs], [l, b], lonlat=True))
-
-
 
 
 def stack_cutouts(ras, decs, weights, prob_weights, imsize, nstack, outname=None, bootstrap=False):
@@ -101,107 +184,6 @@ def stack_cutouts(ras, decs, weights, prob_weights, imsize, nstack, outname=None
 	return finalstack
 
 
-def sum_projections(lon, lat, weights, prob_weights, imsize, reso, inmap, nstack):
-	running_sum, weightsum = np.zeros((imsize, imsize)), np.zeros((imsize, imsize))
-	for j in range(nstack):
-		azproj = hp.projector.AzimuthalProj(rot=[lon[j], lat[j], np.random.randint(0, 360)], xsize=imsize, reso=reso, lamb=True)
-		new_im = weights[j] * convergence_map.set_unseen_to_nan(azproj.projmap(inmap, vec2pix_func=newvec2pix))
-
-		running_sum, weightsum = stack_iteration(running_sum, weightsum, new_im, weights[j], prob_weights[j], imsize)
-
-	return running_sum, weightsum
-
-
-
-
-# for parallelization of stacking procedure, this method will stack a "chunk" of the total stack
-def stack_chunk(chunksize, nstack, lon, lat, inmap, weighting, prob_weights, imsize, reso, k):
-	# if this is the last chunk in the stack, the number of sources in the chunk probably won't be = chunksize
-	if (k * chunksize) + chunksize > nstack:
-		stepsize = nstack % chunksize
-	else:
-		stepsize = chunksize
-	highidx, lowidx = ((k * chunksize) + stepsize), (k * chunksize)
-
-	totsum, weightsum = sum_projections(lon[lowidx:highidx], lat[lowidx:highidx], weighting[lowidx:highidx], prob_weights[lowidx:highidx], imsize, reso, inmap, stepsize)
-
-	return totsum, weightsum
-
-
-# stack by computing an average iteratively. this method uses little memory but cannot be parallelized
-def stack_projections(ras, decs, weights=None, prob_weights=None, imsize=240, outname=None, reso=1.5, inmap=None, nstack=None, mode='normal', chunksize=500):
-	# if no weights provided, weights set to one
-	if weights is None:
-		weights = np.ones(len(ras))
-	if prob_weights is None:
-		prob_weights = np.ones(len(ras))
-	# if no limit to number of stacks provided, stack the entire set
-	if nstack is None:
-		nstack = len(ras)
-
-	lons, lats = equatorial_to_galactic(ras, decs)
-
-	if mode == 'normal':
-		totsum, weightsum = sum_projections(lons, lats, weights, prob_weights, imsize, reso, inmap, nstack)
-		finalstack = totsum/weightsum
-	elif mode == 'mp':
-		# the number of chunks is the number of stacks divided by the chunk size rounded up to the nearest integer
-		nchunks = ceil(nstack / chunksize)
-
-
-		# initalize multiprocessing pool with one less core than is available for stability
-		p = mp.Pool(5)
-		# fill in all arguments to stack_chunk function but the index,
-		# Pool.map() requires function to only take one paramter
-		stack_chunk_partial = partial(stack_chunk, chunksize, nstack, lons, lats, inmap, weights, prob_weights,
-		                              imsize, reso)
-		# do the stacking in chunks, map the stacks to different cores for parallel processing
-		chunksum, chunkweightsum = zip(*p.map(stack_chunk_partial, range(nchunks)))
-
-		totsum = np.sum(chunksum, axis=0)
-		weightsum = np.sum(chunkweightsum, axis=0)
-		finalstack = totsum / weightsum
-
-		p.close()
-		p.join()
-	else:
-		return
-
-	if outname is not None:
-		finalstack.dump('%s.npy' % outname)
-
-	return finalstack
-
-
-
-def fast_stack(ras, decs, inmap, weights=None, prob_weights=None, nsides=2048, iterations=500):
-	if weights is None:
-		weights = np.ones(len(ras))
-
-	outerkappa = []
-	lons, lats = equatorial_to_galactic(ras, decs)
-	inmap = convergence_map.set_unseen_to_nan(inmap)
-	centerkappa = inmap[hp.ang2pix(nsides, lons, lats, lonlat=True)]
-	weights[np.isnan(centerkappa)] = 0
-	centerkappa[np.isnan(centerkappa)] = 0
-
-
-	if prob_weights is not None:
-		true_weights_for_sum = weights * np.array(prob_weights)
-		weightsum = np.sum(true_weights_for_sum)
-	else:
-		weightsum = np.sum(weights)
-
-	centerstack = np.sum(weights * centerkappa) / weightsum
-
-	if iterations > 0:
-		for x in range(iterations):
-			outerkappa.append(np.nanmean(inmap[hp.ang2pix(nsides, (lons + np.random.uniform(2., 14.)), lats, lonlat=True)]))
-
-		return centerstack, np.nanstd(outerkappa)
-	else:
-		return centerstack
-
 
 # if running on local machine, can use this to stack using multiprocessing.
 # Otherwise use stack_mpi.py to perform stack on a cluster computer
@@ -236,7 +218,7 @@ def stack_suite(color, sample_name, stack_map, stack_noise, reso=1.5, imsize=240
 
 
 	if mode == 'fast':
-		return fast_stack(ras, decs, planck_map, weights=weights, prob_weights=probs, nsides=nsides)
+		return fast_stack(ras, decs, planck_map, weights=weights, prob_weights=probs, nsides=nsides, bootstrap=bootstrap)
 	elif mode == 'cutout':
 		return stack_cutouts(ras, decs, weights, probs, imsize, nstack, outname, bootstrap)
 	elif mode == 'mpi':
@@ -253,6 +235,8 @@ def stack_suite(color, sample_name, stack_map, stack_noise, reso=1.5, imsize=240
 				line = '\tstack_maps = %s\n' % stack_map
 			if line.strip().startswith('stack_noise = '):
 				line = '\tstack_noise = %s\n' % stack_noise
+			if line.strip().startswith('temperature = '):
+				line = '\ttemperature = %s\n' % temperature
 			sys.stdout.write(line)
 	else:
 		if stack_map:

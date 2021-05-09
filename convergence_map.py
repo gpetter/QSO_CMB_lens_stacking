@@ -6,6 +6,9 @@ from astropy.convolution import Gaussian2DKernel
 from scipy.signal import convolve as scipy_convolve
 from pixell import enmap, reproject
 import astropy.units as u
+import importlib
+import healpixhelper
+importlib.reload(healpixhelper)
 
 # number of sides to each healpix pixel
 #nsides = 2048
@@ -152,27 +155,64 @@ def make_fake_noise_map(stackedmap):
 
 
 def ACT_map(nside, lmax, smoothfwhm):
-    #bnlensing = enmap.read_map('ACTlensing/act_planck_dr4.01_s14s15_BN_lensing_kappa_baseline.fits')
-    bnlensing = enmap.read_map('ACTlensing/act_dr4.01_s14s15_BN_lensing_kappa.fits')
-    bnlensing_hp = reproject.healpix_from_enmap(bnlensing, lmax=lmax, nside=nside)
+    bnlensing = enmap.read_map('ACTlensing/act_planck_dr4.01_s14s15_BN_lensing_kappa_baseline.fits')
+    #bnlensing = enmap.read_map('ACTlensing/act_dr4.01_s14s15_BN_lensing_kappa.fits')
     bnmask = enmap.read_map('ACTlensing/act_dr4.01_s14s15_BN_lensing_mask.fits')
-    wc_bn = reproject.healpix_from_enmap(bnmask, lmax=lmax, nside=nside)
     wc_bn_mean = np.mean(np.array(bnmask) ** 2)
+    bnlensing = bnlensing * wc_bn_mean
+
+    bnlensing_hp = reproject.healpix_from_enmap(bnlensing, lmax=lmax, nside=nside)
+    bnlensing_alm = hp.map2alm(bnlensing_hp, lmax=lmax)
+    bnlensing_alm = zero_modes(bnlensing_alm, 100)
+    bnlensing_hp = hp.alm2map(bnlensing_alm, nside, lmax)
+
+
+
+    wc_bn = reproject.healpix_from_enmap(bnmask, lmax=lmax, nside=nside)
+
+
     #wc_bn_mean = np.mean(wc_bn**2)
-    bnlensing_hp = bnlensing_hp * wc_bn_mean
+    #bnlensing_hp = bnlensing_hp * wc_bn_mean
+
+
 
     smoothbn = hp.smoothing(bnlensing_hp, fwhm=(smoothfwhm * u.arcmin.to('rad')))
 
-    #dlensing = enmap.read_map('ACTlensing/act_planck_dr4.01_s14s15_D56_lensing_kappa_baseline.fits')
-    dlensing = enmap.read_map('ACTlensing/act_dr4.01_s14s15_D56_lensing_kappa.fits')
-    dlensing_hp = reproject.healpix_from_enmap(dlensing, lmax=lmax, nside=nside)
+
+    smoothbn = healpixhelper.change_coord(smoothbn, ['C', 'G'])
+    wc_bn = healpixhelper.change_coord(wc_bn, ['C', 'G'])
+    smoothbn[np.where(wc_bn < 0.8)] = hp.UNSEEN
+
+    hp.write_map('maps/BN.fits', smoothbn, overwrite=True)
+
+
+    dlensing = enmap.read_map('ACTlensing/act_planck_dr4.01_s14s15_D56_lensing_kappa_baseline.fits')
     dmask = enmap.read_map('ACTlensing/act_dr4.01_s14s15_D56_lensing_mask.fits')
-    wc_d = reproject.healpix_from_enmap(dmask, lmax=lmax, nside=nside)
     wc_d_mean = np.mean(np.array(dmask) ** 2)
+    dlensing = dlensing * wc_d_mean
+    #dlensing = enmap.read_map('ACTlensing/act_dr4.01_s14s15_D56_lensing_kappa.fits')
+    dlensing_hp = reproject.healpix_from_enmap(dlensing, lmax=lmax, nside=nside)
+    dlensing_alm = hp.map2alm(dlensing_hp, lmax=lmax)
+    dlensing_alm = zero_modes(dlensing_alm, 100)
+    dlensing_hp = hp.alm2map(dlensing_alm, nside, lmax)
+
+
+
+
+    wc_d = reproject.healpix_from_enmap(dmask, lmax=lmax, nside=nside)
+
     #wc_d_mean = np.mean(wc_d**2)
 
-    dlensing_hp = dlensing_hp * wc_d_mean
+    #dlensing_hp = dlensing_hp * wc_d_mean
     smoothd = hp.smoothing(dlensing_hp, fwhm=smoothfwhm*u.arcmin.to('rad'))
+
+
+    smoothd = healpixhelper.change_coord(smoothd, ['C', 'G'])
+    wc_d = healpixhelper.change_coord(wc_d, ['C', 'G'])
+    smoothd[np.where(wc_d < 0.8)] = hp.UNSEEN
+
+    hp.write_map('maps/D56.fits', smoothd, overwrite=True)
+
 
     ddataidxs = np.where(wc_d > 0.8)
     combinedmask = wc_bn + wc_d
@@ -180,38 +220,17 @@ def ACT_map(nside, lmax, smoothfwhm):
     smoothbn[ddataidxs] = smoothd[ddataidxs]
     smoothbn[np.where(combinedmask < 0.8)] = hp.UNSEEN
 
+    hp.write_map('maps/both_ACT.fits', smoothbn, overwrite=True)
 
-    return smoothbn
 
-def change_coord(m, coord):
-    """ Change coordinates of a HEALPIX map
+    planckmap = hp.read_map('maps/smoothed_masked_planck.fits')
+    planckmap[np.where(combinedmask > 0.8)] = smoothbn[np.where(combinedmask > 0.8)]
 
-    Parameters
-    ----------
-    m : map or array of maps
-      map(s) to be rotated
-    coord : sequence of two character
-      First character is the coordinate system of m, second character
-      is the coordinate system of the output map. As in HEALPIX, allowed
-      coordinate systems are 'G' (galactic), 'E' (ecliptic) or 'C' (equatorial)
+    hp.write_map('maps/Planck_plus_ACT.fits', planckmap, overwrite=True)
 
-    Example
-    -------
-    The following rotate m from galactic to equatorial coordinates.
-    Notice that m can contain both temperature and polarization.
-    """
-    # Basic HEALPix parameters
-    npix = m.shape[-1]
-    nside = hp.npix2nside(npix)
-    ang = hp.pix2ang(nside, np.arange(npix))
 
-    # Select the coordinate transformation
-    rot = hp.Rotator(coord=reversed(coord))
+    #return smoothbn
 
-    # Convert the coordinates
-    new_ang = rot(*ang)
-    new_pix = hp.ang2pix(nside, *new_ang)
 
-    return m[..., new_pix]
 
 

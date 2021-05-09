@@ -12,6 +12,7 @@ import matplotlib.cm as cm
 import spectrumtools
 #import fitting
 import importlib
+from matplotlib.ticker import AutoMinorLocator
 import fitting
 importlib.reload(fitting)
 importlib.reload(spectrumtools)
@@ -55,7 +56,7 @@ def density_scatter(x, y, cobar=False, ax=None, fig=None, sort=True, bins=20, cu
 
     if cutcolorbar:
         if vmaxin is None:
-            ax.scatter(x, y, c=z, vmin=-2*np.max(z), vmax=np.max(z), **kwargs)
+            ax.scatter(x, y, c=z, vmin=-1.5*np.max(z), vmax=1.5*np.max(z), **kwargs)
         else:
             ax.scatter(x, y, c=z, vmin=-2*vmaxin, vmax=1.5*vmaxin, **kwargs)
     else:
@@ -88,8 +89,8 @@ def wiener_filter():
 
 def plot_stacks(samplename):
     bluestack = np.load('stacks/%s_stack0.npy' % samplename, allow_pickle=True)*1000
-    ctrlstack = np.load('stacks/%s_stack5.npy' % samplename, allow_pickle=True)*1000
-    redstack = np.load('stacks/%s_stack9.npy' % samplename, allow_pickle=True)*1000
+    ctrlstack = np.load('stacks/%s_stack2.npy' % samplename, allow_pickle=True)*1000
+    redstack = np.load('stacks/%s_stack4.npy' % samplename, allow_pickle=True)*1000
     bluestd, ctrlstd, redstd = np.std(bluestack), np.std(ctrlstack), np.std(redstack)
 
     minval = np.min(np.array([bluestack.flatten(), redstack.flatten(), ctrlstack.flatten()]))
@@ -221,19 +222,15 @@ def plot_masses(samplename):
 
 
 
-def plot_kappa_profile(color, kap_profile, kap_errs, binsize, maxtheta, best_mass_profile, binned_model, oneterm, twoterm):
-    if color == 'blue':
-        ckey = 'b'
-    elif color == 'red':
-        ckey = 'r'
-    else:
-        ckey = 'g'
+def plot_kappa_profile(colorbin, kap_profile, kap_errs, binsize, maxtheta, best_mass_profile, binned_model, oneterm=None, twoterm=None):
+
+
     obs_theta = np.arange(binsize / 2, maxtheta, binsize)
 
     theta_range = np.arange(0.5, maxtheta, 0.5)
     plt.figure(0, (10, 8))
-    plt.scatter(obs_theta, kap_profile, c=ckey)
-    plt.errorbar(obs_theta, kap_profile, yerr=kap_errs, c=ckey, fmt='none')
+    plt.scatter(obs_theta, kap_profile, c='k')
+    plt.errorbar(obs_theta, kap_profile, yerr=kap_errs, c='k', fmt='none')
     plt.scatter(obs_theta, binned_model, marker='s', facecolors='none', edgecolors='k', s=50)
     plt.plot(theta_range, oneterm, label='1-halo term', c='k', ls=':')
     plt.plot(theta_range, twoterm, label='2-halo term', c='k', ls='--')
@@ -251,7 +248,7 @@ def plot_kappa_profile(color, kap_profile, kap_errs, binsize, maxtheta, best_mas
     #         fontsize=20)
     # else:
     # plt.text(50, 0.0015, 'log$_{10}(M/h^{-1} M_{\odot}$) = %s' % round(avg_mass, 3), fontsize=20)
-    plt.savefig('plots/profile_%s.png' % color)
+    plt.savefig('plots/profiles/profile_%s.png' % colorbin)
     plt.close('all')
 
 #plot_masses('xdqso_specz')
@@ -279,13 +276,27 @@ def MI_vs_z(zlist, MIlist, nsources, magcut, minz, maxz, lumcut, qso_cat_name, l
         ax.add_patch(rect)
     else:
         plt.fill_between(zs, -30, limMs, color='y', alpha=0.3)
-    plt.xlabel('$z$', fontsize=30)
+    plt.xlabel('$\mathrm{Redshift}$', fontsize=30)
     ax.tick_params(axis='both', labelsize=20)
     plt.ylabel('$M_{i} (z=2)$', fontsize=30)
     plt.ylim(-21, -30)
     plt.savefig('plots/%s_Mi_z.pdf' % qso_cat_name)
     plt.close('all')
     plt.close('all')
+
+def plot_lum_vs_z(zlist, lumlist, nsources, minz, maxz, lumcut, qso_cat_name):
+    plt.figure(figsize=(10, 10))
+    ax = plt.gca()
+    # plt.scatter(qso_cat[zkey], i_abs_mags, c='k', s=0.01, alpha=0.5)
+
+    density_scatter(zlist, lumlist, bins=[30, 30], ax=ax, s=0.05, cmap='magma', rasterized=True)
+    plt.xlabel('$\mathrm{Redshift}$', fontsize=30)
+    ax.tick_params(axis='both', labelsize=20)
+    plt.ylabel('$log(L_{1.5 \ \mu m})$', fontsize=30)
+    plt.ylim(21, 26)
+    plt.savefig('plots/%s_lum_z.pdf' % qso_cat_name)
+    plt.close('all')
+
 
 def w1_minus_w2_plot(w1mag, w2mag, qso_cat_name):
     plt.close('all')
@@ -300,30 +311,32 @@ def w1_minus_w2_plot(w1mag, w2mag, qso_cat_name):
 
 def g_minus_i_plot(qso_cat_name, offset):
     plt.close('all')
-    allzs = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data['Z']
-    czs = fits.open('catalogs/derived/%s_ctrl.fits' % qso_cat_name)[1].data['Z']
-    redzs = fits.open('catalogs/derived/%s_red.fits' % qso_cat_name)[1].data['Z']
-    bluezs = fits.open('catalogs/derived/%s_blue.fits' % qso_cat_name)[1].data['Z']
-    hists = True
+
+    allcat = fits.open('catalogs/derived/%s_colored.fits' % qso_cat_name)[1].data
+    bluecat = allcat[np.where(allcat['colorbin'] == 1)]
+    ctrlcat = allcat[np.where(allcat['colorbin'] == round(np.max(allcat['colorbin'])/2+0.1))]
+    redcat = allcat[np.where(allcat['colorbin'] == np.max(allcat['colorbin']))]
+
+    allzs = allcat['Z']
+    czs = ctrlcat['Z']
+    redzs = redcat['Z']
+    bluezs = bluecat['Z']
+    hists = False
     fig = plt.figure(12351, (10, 9))
 
-    offset=True
+
 
 
     if offset:
-        allcolors = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data['deltagmini']
-        ccolors = fits.open('catalogs/derived/%s_ctrl.fits' % qso_cat_name)[1].data['deltagmini']
-        redcolors = fits.open('catalogs/derived/%s_red.fits' % qso_cat_name)[1].data['deltagmini']
-        bluecolors = fits.open('catalogs/derived/%s_blue.fits' % qso_cat_name)[1].data['deltagmini']
-
+        colkey = 'deltagmini'
     else:
-        allcolors = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data['g-i']
-        ccolors = fits.open('catalogs/derived/%s_ctrl.fits' % qso_cat_name)[1].data['g-i']
-        redcolors = fits.open('catalogs/derived/%s_red.fits' % qso_cat_name)[1].data['g-i']
-        bluecolors = fits.open('catalogs/derived/%s_blue.fits' % qso_cat_name)[1].data['g-i']
+        colkey = 'g-i'
+
+    allcolors, ccolors, redcolors, bluecolors = allcat[colkey], ctrlcat[colkey], redcat[colkey], bluecat[colkey]
 
 
     if hists:
+        offset=True
         left, width = 0.12, 0.7
         #bottom, height = 0.1, 0.65
         bottom, height = 0.1, 0.85
@@ -371,19 +384,17 @@ def g_minus_i_plot(qso_cat_name, offset):
     density_scatter(bluezs, bluecolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Blues', rasterized=True,
                     cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))
 
-
     if offset:
         ax.set_ylabel('$\Delta (g - i)$', fontsize=30)
     else:
         ax.set_ylabel('$g - i$', fontsize=30)
-    ax.set_xlabel('$z$', fontsize=30)
+    ax.set_xlabel('$\mathrm{Redshift}$', fontsize=30)
 
-
-    """zs = np.linspace(0.5, 2.5, 100)
+    zs = np.linspace(np.min(allzs), np.max(allzs), 30)
     modcols = []
     for z in zs:
         modcols.append(spectrumtools.vdb_color_at_z(z))
-    plt.plot(zs, modcols, c='k')"""
+    plt.plot(zs, modcols, c='k')
 
     #plt.scatter(zs, gminusi, c='k', s=0.01, alpha=0.5)
     #plt.scatter(bluezs, bluegs, c='b', s=0.05, rasterized=True)
@@ -393,32 +404,161 @@ def g_minus_i_plot(qso_cat_name, offset):
     plt.savefig('plots/%s_gminusi.pdf' % qso_cat_name)
     plt.close('all')
 
-def color_hist(qso_cat_name, offset=True):
+def color_v_z(qso_cat_name, colorkey):
+    allcat = fits.open('catalogs/derived/%s_colored.fits' % qso_cat_name)[1].data
+    bluecat = allcat[np.where(allcat['colorbin'] == 1)]
+    ctrlcat = allcat[np.where(allcat['colorbin'] == round(np.max(allcat['colorbin']) / 2 + 0.1))]
+    redcat = allcat[np.where(allcat['colorbin'] == np.max(allcat['colorbin']))]
 
-    plt.figure(5946, (8,8))
+    allzs = allcat['Z']
+    czs = ctrlcat['Z']
+    redzs = redcat['Z']
+    bluezs = bluecat['Z']
 
-    if offset:
-        allcolors = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data['deltagmini']
-        plt.xlabel('$\Delta (g - i)$', fontsize=30)
-    else:
-        allcolors = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data['g-i']
-        plt.xlabel('$g - i$', fontsize=30)
-    plt.ylabel('N', fontsize=30)
+    fig = plt.figure(12351, (10, 9))
 
-    nbins=1000
+    ax = plt.gca()
 
-    plt.hist(allcolors, bins=nbins, histtype='step', color='k')
-    xcolors = np.linspace(-1, 1, 1000)
-    gaussfit = fitting.fit_gauss_hist_one_sided(allcolors, xcolors, nbins)
-    plt.plot(xcolors, gaussfit, c='grey')
+    allcolors = allcat[colorkey]
+    bluecolors = bluecat[colorkey]
+    ccolors = ctrlcat[colorkey]
+    redcolors = redcat[colorkey]
 
-    #plt.yscale('log')
-    plt.axvline(0.25, c='k', ls='--')
-    plt.xlim(-1, 2)
-    plt.savefig('plots/colorhist.pdf')
+
+
+
+    bins = 100
+    ps = 0.03
+    data, x_e, y_e = np.histogram2d(allzs, allcolors, bins=[bins, bins], density=True)
+    z = interpn((0.5 * (x_e[1:] + x_e[:-1]), 0.5 * (y_e[1:] + y_e[:-1])), data, np.vstack([allzs, allcolors]).T,
+                method="splinef2d",
+                bounds_error=False)
+
+    # To be sure to plot all data
+    z[np.where(np.isnan(z))] = 0.0
+
+    density_scatter(allzs, allcolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Greys', rasterized=True,
+                    cutcolorbar=True, alpha=0.3, vminin=np.min(z), vmaxin=np.max(z))
+    density_scatter(czs, ccolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Greens', rasterized=True,
+                    cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))
+    density_scatter(redzs, redcolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Reds', rasterized=True,
+                    cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))
+    density_scatter(bluezs, bluecolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Blues', rasterized=True,
+                    cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))
+
+
+    ax.set_ylabel('$%s_{AB}$' % colorkey, fontsize=30)
+    ax.set_xlabel('$\mathrm{Redshift}$', fontsize=30)
+
+
+
+    ax.set_ylim(-1, 5)
+    plt.savefig('plots/%s_color_z.pdf' % qso_cat_name)
     plt.close('all')
 
-#color_hist('xdqso_specz', offset=True)
+#g_minus_i_plot('xdqso_specz', False)
+
+def color_hist(qso_cat_name, colorkey='g-i'):
+
+    fig = plt.figure(figsize=(8,10))
+    allzs = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data['Z']
+    firstband, secondband = colorkey.split('-')[0], colorkey.split('-')[1]
+
+    allcolors = fits.open('catalogs/derived/%s_complete.fits' % qso_cat_name)[1].data['delta%smin%s' % (firstband, secondband)]
+
+
+
+    nbins = 1000
+    sepax=True
+    if sepax:
+        left, width = 0.14, 0.82
+        # bottom, height = 0.1, 0.65
+        bottom, height = 0.1, 0.65
+        spacing = 0.005
+
+        rect_scatter = [left, bottom, width, height]
+        rect_histx = [left, bottom + height + spacing, width, 0.2]
+
+
+        ax = fig.add_axes(rect_scatter)
+        ax.set_ylabel('$z$', fontsize=30)
+        # ax_histx = fig.add_axes(rect_histx, sharex=ax)
+        ax_histy = fig.add_axes(rect_histx, sharex=ax)
+
+        ax_histy.hist(allcolors, bins=nbins, orientation='vertical', histtype='step', color='k')
+
+        ax_histy.tick_params(axis="x", labelbottom=False)
+        #ax_histy.axvline(0.25, linestyle='--', c='k', label='Red-tail cutoff')
+        xcolors = np.linspace(-1, 1, 1000)
+        gaussfit = fitting.fit_gauss_hist_one_sided(allcolors, xcolors, nbins)
+        calcgauss = fitting.gaussian(xcolors, gaussfit[0], gaussfit[1], gaussfit[2])
+        #ax_histy.hist(spectrumtools.model_color_dist(0, 1, 0.2, -1), bins=200, orientation='vertical', histtype='step', color='b', density=True)
+
+        ax_histy.plot(xcolors, calcgauss, c='grey')
+        ax_histy.set_ylabel('N', fontsize=30)
+        #ax_histy.legend(loc='upper right')
+
+    else:
+        ax = plt.gca()
+
+
+    #plt.hist(allcolors, bins=nbins, histtype='step', color='k', density=True)
+
+
+    density_scatter(allcolors, allzs, bins=[20, 20], ax=ax, fig=fig, s=0.05, cmap='Greys', rasterized=True, cutcolorbar=True)
+
+    pltzs = np.linspace(np.min(allzs), np.max(allzs), 50)
+    #pltzs = np.load('medzbins.npy', allow_pickle=True)
+    ebvs = [-0.12, -0.08, -0.04, 0, 0.04, 0.08, 0.12, 0.16, 0.2, 0.24, 0.28, 0.32]
+    lses = ['dashdot', 'solid', 'dotted', 'dashdot', 'solid', 'dotted', 'dashdot', 'solid', 'dotted', 'dashdot']
+    #correction = np.load('vdbcorrection.npy', allow_pickle=True)
+
+    for j in range(len(ebvs)):
+        reddened_cols = []
+        for z in pltzs:
+            reddened_cols.append(spectrumtools.relative_vdb_color(z, ebvs[j]))
+        ax.plot(reddened_cols, pltzs, ls='solid', c='k', label='E(B-V) = %s' % ebvs[j])
+    ax.set_xlabel('$\Delta (%s)$' % colorkey, fontsize=30)
+    ax.legend(loc='lower right')
+
+
+    plt.xlim(-1, 2)
+
+    plt.savefig('plots/%s_colorhist.pdf' % qso_cat_name)
+    plt.close('all')
+
+def color_color():
+    plt.close('all')
+    catpath = 'catalogs/derived/xdqso_specz_complete.fits'
+    firstcolor = fits.open(catpath)[1].data['deltagmini']
+    secondcolor = fits.open(catpath)[1].data['deltaiminz']
+    zs = fits.open(catpath)[1].data['Z']
+
+    plt.figure(figsize=(10, 10))
+    #plt.scatter(secondcolor, firstcolor, rasterized=True)
+    density_scatter(secondcolor, firstcolor, ax=plt.gca(), bins=(10, 10), cutcolorbar=True, rasterized=True, s=0.01)
+
+    plt.ylim((-.5, 1))
+    plt.xlim(-1, 1)
+
+    plt.savefig('plots/color_color.pdf')
+    plt.close('all')
+
+#def plot_mateos_cut(table):
+
+
+#color_color()
+
+#color_hist('xdqso_specz')
+def quickhist():
+    allcolors = fits.open('catalogs/derived/xdqso_specz_complete.fits')[1].data['deltagmini']
+    plt.figure(figsize=(10, 8))
+    plt.hist(allcolors, density=True, range=(-1, 2), bins=100, histtype='step', color='k')
+    modcols = spectrumtools.model_color_dist(0, 0.4, 0.2, -1.5)
+    plt.hist(modcols, density=True, range=(-1, 2), bins=100, histtype='step', color='b')
+    plt.savefig('plots/quickhist.pdf')
+    plt.close('all')
+#quickhist()
 
 def z_dists(qso_cat_name, bzs, czs, rzs):
     plt.close('all')
@@ -426,25 +566,25 @@ def z_dists(qso_cat_name, bzs, czs, rzs):
     plt.hist(rzs, color='r', alpha=0.8, density=True, bins=20, histtype='step', linewidth=2)
     plt.hist(bzs, color='b', alpha=0.8, density=True, bins=20, histtype='step', linewidth=2)
     plt.hist(czs, color='g', alpha=0.8, density=True, bins=20, histtype='step', linewidth=2)
-    plt.xlabel('$z$', fontsize=20)
-    plt.ylabel('$N$', fontsize=20)
+    plt.xlabel('$\mathrm{Redshift}$', fontsize=20)
+    plt.ylabel('$\mathrm{Frequency}$', fontsize=20)
     plt.savefig('plots/%s_zdists.pdf' % qso_cat_name)
     plt.close('all')
 
 def lum_dists(qso_cat_name, lumhistbins, blueLs, cLs, redLs, tailLs=None):
     plt.close('all')
     plt.figure(4, (10, 10))
-    plt.hist(blueLs, color='b', alpha=0.8, density=True, bins=lumhistbins, range=(21, 26), histtype='step', linewidth=2)
-    plt.hist(cLs, color='g', alpha=0.8, density=True, bins=lumhistbins, range=(21, 26), histtype='step', linewidth=2)
-    plt.hist(redLs, color='r', alpha=0.8, density=True, bins=lumhistbins, range=(21, 26), histtype='step', linewidth=2)
+    plt.hist(blueLs, color='b', alpha=0.8, density=True, bins=lumhistbins, range=(40, 50), histtype='step', linewidth=2)
+    plt.hist(cLs, color='g', alpha=0.8, density=True, bins=lumhistbins, range=(40, 50), histtype='step', linewidth=2)
+    plt.hist(redLs, color='r', alpha=0.8, density=True, bins=lumhistbins, range=(40, 50), histtype='step', linewidth=2)
     if tailLs is not None:
         plt.hist(tailLs, color='grey', alpha=0.5, density=True, bins=lumhistbins, range=(21,26), histtype='step', linewidth=2)
-    plt.xlabel(r'log($\frac{L_{1.5\mu\mathrm{m}}}{\mathrm{W \ Hz}^{-1}}$)', fontsize=30)
-    plt.ylabel('N', fontsize=30)
+    plt.xlabel(r'log$\left( \frac{ \nu L_{\nu} (1.5\mu\mathrm{m})}{\mathrm{erg \ s}^{-1}} \right)$', fontsize=30)
+    plt.ylabel('$\mathrm{Frequency}$', fontsize=30)
     plt.savefig('plots/%s_lumhist.pdf' % qso_cat_name)
     plt.close('all')
 
-def radio_detect_frac_plot(fracs, surv_name='FIRST', return_plot=False):
+def radio_detect_frac_plot(fracs, colorkey, surv_name='FIRST', return_plot=False):
     xs = np.arange(1, len(fracs)+1)*1/len(fracs) - 1/(2*len(fracs))
     plt.figure(153, (8, 6))
     colors = cm.rainbow(np.linspace(0, 1, len(fracs)))
@@ -452,7 +592,7 @@ def radio_detect_frac_plot(fracs, surv_name='FIRST', return_plot=False):
         plt.scatter(xs[j], fracs[j], color=colors[j])
     plt.xlim(0, 1)
     plt.ylabel('$f_{\mathrm{%s}}$' % surv_name, fontsize=20)
-    plt.xlabel('$g - i$ bin', fontsize=20)
+    plt.xlabel('$%s$ bin' % colorkey, fontsize=20)
     if return_plot:
         plt.show()
     else:
@@ -479,9 +619,9 @@ def kappa_vs_mass():
 
 def plot_ang_correlation_function(sample_id, nbins):
     bins = np.logspace(-2, 1, nbins)
-    redw, redw_err = np.load('clustering/%s_red.npy' % sample_id, allow_pickle=True)
-    bluew, bluew_err = np.load('clustering/%s_blue.npy' % sample_id, allow_pickle=True)
-    ctrlw, ctrl_err = np.load('clustering/%s_ctrl.npy' % sample_id, allow_pickle=True)
+    redw, redw_err = np.load('angclustering/%s_10.npy' % sample_id, allow_pickle=True)
+    bluew, bluew_err = np.load('angclustering/%s_1.npy' % sample_id, allow_pickle=True)
+    #ctrlw, ctrl_err = np.load('clustering/%s_ctrl.npy' % sample_id, allow_pickle=True)
 
 
     plt.figure(424, (8, 6))
@@ -489,8 +629,8 @@ def plot_ang_correlation_function(sample_id, nbins):
     plt.errorbar(bins, redw, yerr=redw_err, fmt='none', ecolor='r')
     plt.scatter(bins, bluew, c='b')
     plt.errorbar(bins, bluew, yerr=bluew_err, fmt='none', ecolor='b')
-    plt.scatter(bins, ctrlw, c='g')
-    plt.errorbar(bins, ctrlw, yerr=ctrl_err, fmt='none', ecolor='g')
+    #plt.scatter(bins, ctrlw, c='g')
+    #plt.errorbar(bins, ctrlw, yerr=ctrl_err, fmt='none', ecolor='g')
     plt.xscale('log')
     plt.yscale('log')
     plt.xlabel(r'$\theta$ (degrees)', fontsize=20)
@@ -498,18 +638,20 @@ def plot_ang_correlation_function(sample_id, nbins):
     plt.savefig('plots/ang_clustering.pdf')
     plt.close('all')
 
-def plot_ang_cross_corr(sample_id, nbins):
+def plot_ang_cross_corr(sample_id, nbins, minscale, maxscale, samples):
     plt.close('all')
-    bins = np.logspace(-2, -0.5, nbins)
+    bins = np.logspace(minscale, maxscale, nbins)
 
-    redw, redw_err = np.load('clustering/%s_cross_red.npy' % sample_id, allow_pickle=True)
-    bluew, bluew_err = np.load('clustering/%s_cross_blue.npy' % sample_id, allow_pickle=True)
-    plt.figure(929, (8, 6))
 
-    plt.scatter(bins, redw, c='r')
-    plt.errorbar(bins, redw, yerr=redw_err, fmt='none', ecolor='r')
-    plt.scatter(bins, bluew, c='b')
-    plt.errorbar(bins, bluew, yerr=bluew_err, fmt='none', ecolor='b')
+    colors = cm.rainbow(np.linspace(0, 1, len(samples)))
+
+    plt.figure(figsize=(8, 6))
+
+    for j, sample in enumerate(samples):
+        w, werr = np.load('clustering/ang_cross/%s_%s.npy' % (sample_id, sample+1), allow_pickle=True)
+        plt.scatter(bins, w, color=colors[j])
+        plt.errorbar(bins, w, yerr=werr, fmt='none', ecolor=colors[j], alpha=0.3)
+
 
     plt.xscale('log')
     plt.yscale('log')
@@ -520,33 +662,101 @@ def plot_ang_cross_corr(sample_id, nbins):
     plt.savefig('plots/ang_cross_corr.pdf')
     plt.close('all')
 
-def plot_spatial_correlation_function(bins):
-    import autocorrelation
-    redw, redw_err = np.load('clustering/eboss_lss_red.npy', allow_pickle=True)
-    bluew, bluew_err = np.load('clustering/eboss_lss_blue.npy', allow_pickle=True)
-    ctrlw, ctrlw_err = np.load('clustering/eboss_lss_ctrl.npy', allow_pickle=True)
+def plot_spatial_cross_corr(samples):
+    plt.close('all')
+    #bins = np.logspace(minscale, maxscale, nbins)
 
-    plt.figure(91, (8, 6))
-    plt.scatter(bins, bluew, c='b')
-    plt.errorbar(bins, bluew, yerr=bluew_err, fmt='none', ecolor='b', elinewidth=1, capsize=3)
 
-    plt.scatter(bins, redw, c='r')
-    plt.errorbar(bins, redw, yerr=redw_err, fmt='none', ecolor='r', elinewidth=1, capsize=3)
 
-    plt.scatter(bins, ctrlw, c='g')
-    plt.errorbar(bins, ctrlw, yerr=ctrlw_err, fmt='none', ecolor='g', elinewidth=1, capsize=3)
-    plt.plot(bins, 6 * autocorrelation.theory_projected_corr_func(bins), c='k', label='Dark Matter (b=2.45 at z=1.5)')
-    plt.legend()
+    colors = cm.rainbow(np.linspace(0, 1, len(samples)))
+
+
+    plt.figure(figsize=(8, 6))
+
+    for j, sample in enumerate(samples):
+        avg_rs, w, werr = np.load('clustering/spatial_cross/%s.npy' % (sample+1), allow_pickle=True)
+        linfit = np.polyfit(np.log(avg_rs), np.log(w), 1)
+        print(linfit)
+
+        plt.scatter(avg_rs, w, color=colors[j])
+        plt.errorbar(avg_rs, w, yerr=werr, fmt='none', ecolor=colors[j], alpha=0.3)
+
+
+
 
     plt.xscale('log')
     plt.yscale('log')
-    plt.xlabel('$r$ (Mpc)', fontsize=20)
+    plt.xlabel(r'$r_{p} (h^{-1}$ Mpc)', fontsize=20)
+    plt.ylabel(r'$w_{p}(r_{p})$', fontsize=20)
+
+
+    plt.savefig('plots/spatial_cross_corr.pdf')
+    plt.close('all')
+
+    plt.figure(figsize=(8, 6))
+    avg_rs, redw, rederr = np.load('clustering/spatial_cross/%s.npy' % int(np.max(samples)+1), allow_pickle=True)
+    avg_rs, bluew, bluerr = np.load('clustering/spatial_cross/1.npy', allow_pickle=True)
+    plt.scatter(avg_rs, redw/bluew)
+    errs = redw/bluew * np.sqrt((rederr/redw)**2+(bluerr/bluew)**2)
+    plt.errorbar(avg_rs, redw/bluew, yerr=errs, fmt='none')
+    plt.savefig('plots/cross_ratio.pdf')
+    plt.close('all')
+
+def plot_spatial_correlation_function(nbins, minscale, maxscale, n_samples):
+
+    bins = np.logspace(minscale, maxscale, nbins)
+    colors = cm.rainbow(np.linspace(0, 1, n_samples))
+
+    #bluew, bluew_err = np.load('clustering/xdqso_specz_1.npy', allow_pickle=True)
+    #ctrlw, ctrlw_err = np.load('clustering/eboss_lss_ctrl.npy', allow_pickle=True)
+
+    plt.close('all')
+    plt.figure(figsize=(8, 6))
+    if n_samples > 1:
+        for j in range(n_samples):
+            w, werr = np.load('clustering/spatial/eboss_lss_%s.npy' % (j+1), allow_pickle=True)
+            plt.scatter(bins, w, color=colors[j])
+            plt.errorbar(bins, w, yerr=werr, fmt='none', ecolor=colors[j], alpha=0.3)
+    else:
+        w, werr = np.load('clustering/spatial/eboss_lss_all.npy', allow_pickle=True)
+        plt.scatter(bins, w, color=colors[0])
+        plt.errorbar(bins, w, yerr=werr , fmt='none', ecolor=colors[0], alpha=0.3)
+
+
+    #plt.errorbar(bins, w, yerr=bluew_err, fmt='none', ecolor='b', elinewidth=1, capsize=3)
+
+    #plt.scatter(bins, redw, c='r')
+    #plt.errorbar(bins, redw, yerr=redw_err, fmt='none', ecolor='r', elinewidth=1, capsize=3)
+
+    #plt.scatter(bins, ctrlw, c='g')
+    #plt.errorbar(bins, ctrlw, yerr=ctrlw_err, fmt='none', ecolor='g', elinewidth=1, capsize=3)
+    #plt.plot(bins, 6 * autocorrelation.theory_projected_corr_func(bins), c='k', label='Dark Matter (b=2.45 at z=1.5)')
+
+
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('$r_{p} (h^{-1}$ Mpc)', fontsize=20)
     plt.ylabel(r'$w_{p}(r_{p})/r_{p}$', fontsize=20)
     plt.savefig('plots/spatial_clustering.pdf')
     plt.close('all')
 
+def plot_2d_corr_func(cf):
+    ara = np.arange(200)
+    xx, yy = np.meshgrid(ara, ara, sparse=True)
+    rs = np.sqrt(xx**2 + yy**2)
+    cf2d = np.reshape(cf, (-1, 200)) * rs
+    plt.figure(figsize=(10, 8))
+    #plt.imshow(cf, aspect='auto', origin='lower')
+    plt.contourf(ara, ara, cf2d)
+    plt.colorbar(label=r'$\xi(r_{p}, \pi)$')
+    plt.xlabel('$\pi_{max}$', fontsize=30)
+    plt.ylabel('$r_{p}$', fontsize=30)
+    plt.legend()
+    plt.savefig('plots/2dCF.pdf')
+    plt.close('all')
 
-def plot_median_radio_flux(remove_reddest=False):
+
+def plot_median_radio_flux(colorkey, remove_reddest=False):
     colors, median_fluxes, fluxerrs = np.load('plotting_results/first_flux_for_color.npy', allow_pickle=True)
     plt.figure(5343, (8, 6))
     fluxes = np.array(median_fluxes) * 10 ** 6
@@ -573,12 +783,12 @@ def plot_median_radio_flux(remove_reddest=False):
         plt.errorbar(colors, fluxes, yerr=fluxerrs, c='k', fmt='none')
     plt.ylabel(r'$S_{1.4 \mathrm{GHz}} (\mu \mathrm{Jy})$', fontsize=20)
 
-    plt.xlabel(r'$\langle \Delta (g-i) \rangle$', fontsize=20)
+    plt.xlabel('$%s$ bin' % colorkey, fontsize=20)
 
     plt.savefig('plots/median_flux_by_color.pdf')
     plt.close('all')
 
-def plot_median_radio_luminosity(remove_reddest=False):
+def plot_median_radio_luminosity(colorkey, remove_reddest=False):
     plt.figure(964, (8, 6))
 
     colors, median_lums, lumerrs = np.load('plotting_results/first_lum_for_color.npy', allow_pickle=True)
@@ -600,11 +810,12 @@ def plot_median_radio_luminosity(remove_reddest=False):
     plt.scatter(colors, median_lums, c='k')
     if lumerrs is not None:
         plt.errorbar(colors, median_lums, yerr=lumerrs, c='k', fmt='none')
-    plt.ylabel(r'$L_{1.4 \mathrm{GHz}}$ (W Hz$^{-1}$)', fontsize=20)
-    plt.axhline(1.57e23, linestyle='--', c='k')
-    plt.text(0.6, 1.5e23, 'SFR $ = 100 M_{\odot} yr ^ {-1}$')
+    plt.ylabel(r'$L_{1.4 \mathrm{GHz}}$ (erg s$^{-1}$ Hz$^{-1}$)', fontsize=20)
+    plt.axhline(1.5e30, linestyle='--', c='k', label='SFR $ = 100 M_{\odot} yr ^ {-1}$')
+    plt.legend()
+    plt.ticklabel_format(axis='y', style='sci')
 
-    plt.xlabel(r'$\langle \Delta (g-i) \rangle$', fontsize=20)
+    plt.xlabel('$%s$ bin' % colorkey, fontsize=20)
 
     plt.savefig('plots/median_lum_by_color.pdf')
     plt.close('all')
@@ -612,7 +823,7 @@ def plot_median_radio_luminosity(remove_reddest=False):
 
 
 
-def plot_radio_loudness(remove_reddest=False):
+def plot_radio_loudness(colorkey, remove_reddest=False):
     plt.figure(34334, (8, 8))
     colors, loudness, louderrs = np.load('plotting_results/first_loud_for_color.npy', allow_pickle=True)
 
@@ -632,7 +843,7 @@ def plot_radio_loudness(remove_reddest=False):
         loudness = loudness[:lastidx]
 
 
-    plt.xlabel(r'$\langle \Delta (g-i) \rangle$', fontsize=30)
+    plt.xlabel('$%s$ bin' % colorkey, fontsize=30)
 
     plt.scatter(colors, loudness, c='k')
     if louderrs is not None:
@@ -641,8 +852,13 @@ def plot_radio_loudness(remove_reddest=False):
     plt.savefig('plots/radio_loudness_by_color.pdf')
     plt.close('all')
 
-def plot_kappa_v_color(colors, kappas, errs, offset, remove_reddest=False, linfit=None):
-    plt.figure(531, (8, 6))
+def plot_kappa_v_color(kappas, errs, colorkey, planck_kappas=None, act_kappas=None, transforms=None, remove_reddest=False, linfit=None):
+    fig, ax1 = plt.subplots(figsize=(8, 7))
+
+    colors = np.arange(1, len(kappas)+1)*1/len(kappas) - 1/(2*len(kappas))
+
+
+
     if not remove_reddest:
         lastidx = len(colors)-1
         redcolor = colors[lastidx]
@@ -656,21 +872,43 @@ def plot_kappa_v_color(colors, kappas, errs, offset, remove_reddest=False, linfi
         kappas = kappas[:lastidx]
         errs = errs[:lastidx]
 
-
-    linmod = linfit[0]*np.array(colors) + linfit[1]
-
-
-    plt.scatter(colors, kappas, c='k')
-    plt.errorbar(colors, kappas, yerr=errs, fmt='none', ecolor='k')
+    ax1.scatter(colors, kappas, c='k')
+    ax1.errorbar(colors, kappas, yerr=errs, fmt='none', ecolor='k')
     if linfit is not None:
-        plt.plot(colors, linmod, c='k', linestyle='--')
+        linmod = linfit[0] * np.array(colors) + linfit[1]
+        ax1.plot(colors, linmod, c='k', linestyle='--')
     #if offset:
-    plt.xlabel(r'$\langle \Delta (g-i) \rangle$', fontsize=20)
+    #ax1.set_xlabel(r'$\langle \Delta (g-i) \rangle$', fontsize=20)
+    ax1.set_xlabel('$%s$ bin' % colorkey, fontsize=20)
     #else:
         #plt.xlabel('$g-i$', fontsize=20)
-    plt.ylabel('$\kappa_{\mathrm{peak}}$', fontsize=20)
+    ax1.set_ylabel(r'$\langle \kappa_{\mathrm{peak}} \rangle$', fontsize=25)
+    if planck_kappas is not None:
+        planck_kappas = np.array(planck_kappas)
+        ax1.scatter(colors, planck_kappas[:, 0], c='cyan', label='Planck')
+        ax1.errorbar(colors, planck_kappas[:, 0], yerr=planck_kappas[:, 1], fmt='none', ecolor='cyan', alpha=0.3)
+    if act_kappas is not None:
+        act_kappas = np.array(act_kappas)
+        ax1.scatter(colors, act_kappas[:, 0], c='pink', label='ACT')
+        ax1.errorbar(colors, act_kappas[:, 0], yerr=act_kappas[:, 1], ecolor='pink', fmt='none', alpha=0.3)
+        plt.legend()
+
+
+    if transforms is not None:
+        def forward(x):
+            return np.interp(x, transforms[0], transforms[1])
+
+        def inverse(x):
+            return np.interp(x, transforms[1], transforms[0])
+
+        secax = ax1.secondary_yaxis('right', functions=(forward, inverse))
+        secax.yaxis.set_minor_locator(AutoMinorLocator())
+
+        secax.set_ylabel(r'$\langle \mathrm{log}_{10}(M/h^{-1} M_{\odot})\rangle$', fontsize=20)
+
     plt.savefig('plots/kappa_v_color.pdf')
     plt.close('all')
+
 
 
 def plot_temp_v_color(colors, temps, errs, offset, remove_reddest=False):

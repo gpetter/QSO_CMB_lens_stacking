@@ -182,7 +182,7 @@ def median_stack(ids):
 	stacked = np.nanmedian(cutouts, axis=0)
 	return stacked
 
-def median_first_stack(color, sample_name, weights=None, prob_weights=None, outname=None, nbootstraps=0):
+def median_first_stack(color, sample_name, weights=None, prob_weights=None, write=False, nbootstraps=0):
 	cat = fits.open('catalogs/derived/%s_%s.fits' % (sample_name, color))[1].data
 
 	if (sample_name == 'xdqso') or (sample_name == 'xdqso_specz'):
@@ -209,4 +209,6 @@ def median_first_stack(color, sample_name, weights=None, prob_weights=None, outn
 		stackrealizations[j] = 1.4*median_stack(newids)
 	stackerr = np.std(stackrealizations)
 
+	if write:
+		bias_corrected_stack.dump('radio_stacks/%s_%s_first_stack.npy' % (sample_name, color))
 	return bias_corrected_stack

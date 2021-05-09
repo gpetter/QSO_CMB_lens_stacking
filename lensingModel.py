@@ -15,6 +15,7 @@ importlib.reload(fitting)
 cosmo = cosmology.setCosmology('planck18')
 apcosmo = cosmo.toAstropy()
 
+
 # defining the critical surface density for lensing
 def sigma_crit(z):
 	return ((const.c ** 2) / (4. * np.pi * const.G) * (apcosmo.angular_diameter_distance(1100.) / (
@@ -148,20 +149,6 @@ def model_stacked_map(zdist, m_per_h, imsize=240, reso=1.5):
 	model_kappas = filtered_model_at_theta(zdist, m_per_h, radii_theta)
 	return model_kappas
 
-"""# calculate average model value in same bins as measured
-def filtered_model_in_bins(zdist, obs_thetas, m_per_h):
-	theta_list = np.arange(0.1, 360, 0.1)*u.arcmin
-	model_full_range = filter_model(zdist, m_per_h)
-	binsize = obs_thetas[1] - obs_thetas[0]
-
-	theta_list = theta_list.value
-	binned_kappa = []
-	for theta in obs_thetas:
-
-		binned_kappa.append(np.mean(model_full_range[np.where((theta_list > (theta - binsize/2)) & (theta_list < (theta + binsize/2)))]))
-
-	return(binned_kappa)
-"""
 
 
 
@@ -170,6 +157,7 @@ def filtered_model_center(zdist, obs_theta, m_per_h, reso=1.5, imsize=240):
 	modelmap = model_stacked_map(zdist, m_per_h, reso=reso, imsize=imsize)
 	return modelmap[int(imsize/2), int(imsize/2)]
 
+
 # calculate average model value in same bins as measured
 def filtered_model_in_bins(zdist, obs_thetas, m_per_h, binsize=12, reso=1.5, imsize=240, maxtheta=180):
 
@@ -177,6 +165,7 @@ def filtered_model_in_bins(zdist, obs_thetas, m_per_h, binsize=12, reso=1.5, ims
 
 	profile = fitting.measure_profile(modelmap, binsize, reso, maxtheta=maxtheta)
 	return profile
+
 
 def lensing_kernel(zs):
 	wk = 3/2*(apcosmo.Om0)*((apcosmo.H0/const.c)**2)*(1+zs)*\
@@ -189,3 +178,12 @@ def mass_to_avg_bias(m_per_h, zs):
 	medz = np.median(zs)
 	bh = bias.haloBias(M=m_per_h, z=medz, mdef='200c', model='tinker10')
 	return bh
+
+def kappa_mass_relation(zdist, eval_kappas):
+	masses = np.logspace(11, 13.5, 20)
+	kappas = []
+	for j in range(len(masses)):
+		kappas.append(filtered_model_center(zdist, 0, masses[j]))
+	logmasses = np.log10(masses)
+	polycoeffs = np.polyfit(kappas, logmasses, 2)
+	return np.polyval(polycoeffs, eval_kappas)
