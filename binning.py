@@ -90,27 +90,34 @@ def bin_by_bal():
 	balidxs = np.where(balcat['BAL_PROB'] >= prob_thresh)
 	nonbalidxs = np.where((balcat['BAL_PROB'] >= 0) & (balcat['BAL_PROB'] < 0.5))
 
-	zs = balcat['Z']
-	balzs, nonzs = zs[balidxs], zs[nonbalidxs]
-
 	balcat['weight'] = np.zeros(len(balcat))
-	balcat['weight'][balidxs] = weighting.redshift_weights([balzs, nonzs], 0, 30)
-	balcat['weight'][nonbalidxs] = weighting.redshift_weights([balzs, nonzs], 1, 30)
 
-	balcat['colorbin'] = -1*np.ones(len(balcat))
-	balcat['colorbin'][balidxs] = 1
-	balcat['colorbin'][nonbalidxs] = 2
+	balcat['weight'] = weighting.redshift_weights([balidxs, nonbalidxs], len(balcat),
+	                                              [balcat['Z'][balidxs], balcat['Z'][nonbalidxs]],
+	                                              20, np.min(balcat['Z']), np.max(balcat['Z']))
+
+	balcat['bin'] = -1*np.ones(len(balcat))
+	balcat['bin'][balidxs] = 1
+	balcat['bin'][nonbalidxs] = 2
 
 	balcat.write('catalogs/derived/dr16_bal.fits', format='fits', overwrite=True)
 
-def bin_by_bh_mass(n_massbins):
+
+
+def bin_by_bh_mass(n_massbins, minz, maxz):
 	cat = fits.open('catalogs/SDSS_QSOs/dr14q_spec_prop.fits')[1].data
 
-	bhcat = Table(cat[np.where((cat['QUALITY_MBH'] == 0) & (cat['LOG_MBH_ERR'] < 0.3) & (cat['LOG_MBH'] > 7) & (cat['REDSHIFT'] < 3))])
+	bhcat = Table(cat[np.where((cat['QUALITY_MBH'] == 0) & (cat['LOG_MBH_ERR'] < 0.3) & (cat['LOG_MBH'] > 7) & (cat['REDSHIFT'] <= maxz) & (cat['REDSHIFT'] >= minz))])
 	mbhs = bhcat['LOG_MBH']
 
 	massbins = pd.qcut(mbhs, n_massbins, retbins=True)[1]
 
 	bhcat['bin'] = np.digitize(mbhs, massbins)
+	indexarr = [np.where(bhcat['bin'] == j+1) for j in range(n_massbins)]
+	zsarr = []
+	for j in range(n_massbins):
+		zsarr.append(bhcat['REDSHIFT'][indexarr[j]])
+
+	bhcat['weight'] = weighting.redshift_weights(indexarr, len(bhcat), zsarr, 20, np.min(bhcat['REDSHIFT']), np.max(bhcat['REDSHIFT']))
 
 	bhcat.write('catalogs/derived/bhmass/dr14_mass_binned.fits', format='fits', overwrite=True)
