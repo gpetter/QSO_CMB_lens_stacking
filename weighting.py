@@ -6,10 +6,10 @@ from scipy import stats
 
 # calculate weights to control for quasar luminosity
 # weight each sample down to the minimum of all samples
-def lum_weights(lums_arr, minlum, maxlum, bins, colorbin=0):
+def lum_weights(lums_arr, minlum, maxlum, bins, bin=0):
 
 	# the luminosities of the color in question
-	lumset = lums_arr[colorbin]
+	lumset = lums_arr[bin]
 
 	# calculate luminosity histograms for all samples
 	hists = []
@@ -23,7 +23,7 @@ def lum_weights(lums_arr, minlum, maxlum, bins, colorbin=0):
 	min_in_bins = np.amin(hists, axis=0)
 
 	# weight down to the minimum in each bin
-	dist_ratio = min_in_bins / hists[colorbin]
+	dist_ratio = min_in_bins / hists[bin]
 
 	# set nans to zero
 	dist_ratio[np.where(np.isnan(dist_ratio) | np.isinf(dist_ratio))] = 0
@@ -36,30 +36,39 @@ def lum_weights(lums_arr, minlum, maxlum, bins, colorbin=0):
 	return weights
 
 
+# apply weights to quasars to weight down to approximately the same redshift distribution
+# indices -- 2d array, each index is an array containing the indices of a subsample of quasars
+# zs_arr -- 2d array, each index is an array containing the redshifts of a subsample of quasars
+# nobjects
+def redshift_weights(indices, nobjects, zs_arr, bins, minz, maxz):
 
-def redshift_weights(zs_arr, colorbin, bins):
-	# the luminosities of the color in question
-	these_zs = zs_arr[colorbin]
+	hists, bin_locs = [], []
 
-	# calculate luminosity histograms for all samples
-	hists = []
 	for i in range(len(zs_arr)):
-		thishist = np.histogram(zs_arr[i], bins=bins, range=(0, 8), density=True)
+		# calculate normalized redshift distribution
+		thishist = np.histogram(zs_arr[i], bins=bins, range=(minz-0.001, maxz+0.001), density=True)
+		# add to list
 		hists.append(thishist[0])
+		# save edges of bins to later find objects within them
 		if i == 0:
 			bin_edges = thishist[1]
+	# find minimum redshift distribution across all samples
 	hists = np.array(hists)
-	# the minimum in each bin
 	min_in_bins = np.amin(hists, axis=0)
+	# initialize weights
+	weights = np.zeros(nobjects)
 
-	# weight down to the minimum in each bin
-	dist_ratio = min_in_bins / hists[colorbin]
-
-	# set nans to zero
-	dist_ratio[np.where(np.isnan(dist_ratio) | np.isinf(dist_ratio))] = 0
-
-	bin_idxs = np.digitize(these_zs, bin_edges) - 1
-	weights = dist_ratio[bin_idxs]
+	# for each subsample
+	for j in range(len(zs_arr)):
+		# ratio of minimum redshift distribution to the subsample's redshift distribution
+		# these are the weights
+		dist_ratio = min_in_bins/hists[j]
+		# set divisions by zero to zero
+		dist_ratio[np.where(np.isnan(dist_ratio) | np.isinf(dist_ratio))] = 0
+		# find which redshift bin each object belongs in
+		bin_idxs = np.digitize(zs_arr[j], bin_edges) - 1
+		# apply weights to objects
+		weights[indices[j]] = dist_ratio[bin_idxs]
 
 	return weights
 
@@ -93,7 +102,6 @@ def lum_z_2d_weights(indices, number, lums_arr, zs_arr, minlum, maxlum, minz, ma
 # multiply luminosity weights by probability weights
 def convolved_weights(pqso_weights, number, indices, lum_arr, zs_arr, minlum, maxlum, minz, maxz, nlumbins, nzbins):
 
-	#l_weights = lum_weights(lum_arr, minlum, maxlum, bins, colorbin=colorbin)
 	l_weights = lum_z_2d_weights(indices, number, lum_arr, zs_arr, minlum, maxlum, minz, maxz, nlumbins, nzbins)
 
 	totweights = pqso_weights * l_weights
