@@ -12,7 +12,10 @@ import matplotlib.cm as cm
 import spectrumtools
 #import fitting
 import importlib
+import mpl_scatter_density
 from matplotlib.ticker import AutoMinorLocator
+from astropy.visualization import LogStretch
+from astropy.visualization.mpl_normalize import ImageNormalize
 import fitting
 import clusteringModel
 import redshift_dists
@@ -336,7 +339,9 @@ def g_minus_i_plot(qso_cat_name, offset):
     ebossandxd = True
 
     if ebossandxd:
-        fig, (ax, ax2) = plt.subplots(1, 2, sharey=True, figsize=(15, 8))
+        fig, (ax, ax2) = plt.subplots(1, 2, sharey=True, figsize=(15, 8), subplot_kw={'projection': 'scatter_density'})
+        #ax.set_rasterization_zorder(2)
+        #ax2.set_rasterization_zorder(2)
         fig.supxlabel('$\mathrm{Redshift}$', fontsize=30)
         ebosscat = fits.open('catalogs/derived/eBOSS_QSO_binned.fits')[1].data
         xdcat = fits.open('catalogs/derived/xdqso_specz_binned.fits')[1].data
@@ -357,7 +362,7 @@ def g_minus_i_plot(qso_cat_name, offset):
         allxdcolors, cxdcolors, redxdcolors, bluexdcolors = xdcat[colkey], ctrlxdcat[colkey], \
                                                                         redxdcat[colkey], bluexdcat[colkey]
 
-        bins = 100
+        """bins = 100
         ps = 0.03
         data, x_e, y_e = np.histogram2d(allebosszs, allebosscolors, bins=[bins, bins], density=True)
         z = interpn((0.5 * (x_e[1:] + x_e[:-1]), 0.5 * (y_e[1:] + y_e[:-1])), data, np.vstack([allebosszs, allebosscolors]).T,
@@ -367,16 +372,23 @@ def g_minus_i_plot(qso_cat_name, offset):
         # To be sure to plot all data
         z[np.where(np.isnan(z))] = 0.0
 
-        density_scatter(allebosszs, allebosscolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Greys', rasterized=True,
+        density_scatter(allebosszs, allebosscolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Greys',
                         cutcolorbar=True, alpha=0.3, vminin=np.min(z), vmaxin=np.max(z))
-        density_scatter(cebosszs, cebosscolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Greens', rasterized=True,
+        density_scatter(cebosszs, cebosscolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Greens',
                         cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))
-        density_scatter(redebosszs, redebosscolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Reds', rasterized=True,
+        density_scatter(redebosszs, redebosscolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Reds',
                         cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))
-        density_scatter(blueebosszs, blueebosscolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Blues', rasterized=True,
-                        cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))
+        density_scatter(blueebosszs, blueebosscolors, bins=[bins, bins], ax=ax, fig=fig, s=ps, cmap='Blues',
+                        cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))"""
 
-        data, x_e, y_e = np.histogram2d(allxdzs, allxdcolors, bins=[bins, bins], density=True)
+        norm = ImageNormalize(vmin=0., vmax=7)
+        ax.scatter_density(allebosszs, allebosscolors, color='dimgrey', norm=norm, alpha=0.9)
+        ax.scatter_density(cebosszs, cebosscolors, color='darkgreen', norm=norm)
+        ax.scatter_density(redebosszs, redebosscolors, color='darkred', norm=norm)
+        ax.scatter_density(blueebosszs, blueebosscolors, color='royalblue', norm=norm)
+
+
+        """data, x_e, y_e = np.histogram2d(allxdzs, allxdcolors, bins=[bins, bins], density=True)
         z = interpn((0.5 * (x_e[1:] + x_e[:-1]), 0.5 * (y_e[1:] + y_e[:-1])), data,
                     np.vstack([allebosszs, allebosscolors]).T,
                     method="splinef2d",
@@ -385,18 +397,22 @@ def g_minus_i_plot(qso_cat_name, offset):
         # To be sure to plot all data
         z[np.where(np.isnan(z))] = 0.0
         density_scatter(allxdzs, allxdcolors, bins=[bins, bins], ax=ax2, fig=fig, s=ps, cmap='Greys',
-                        rasterized=True,
                         cutcolorbar=True, alpha=0.3, vminin=np.min(z), vmaxin=np.max(z))
-        density_scatter(cxdzs, cxdcolors, bins=[bins, bins], ax=ax2, fig=fig, s=ps, cmap='Greens', rasterized=True,
+        density_scatter(cxdzs, cxdcolors, bins=[bins, bins], ax=ax2, fig=fig, s=ps, cmap='Greens',
                         cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))
         density_scatter(redxdzs, redxdcolors, bins=[bins, bins], ax=ax2, fig=fig, s=ps, cmap='Reds',
-                        rasterized=True,
                         cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))
         density_scatter(bluexdzs, bluexdcolors, bins=[bins, bins], ax=ax2, fig=fig, s=ps, cmap='Blues',
-                        rasterized=True,
-                        cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))
+                        cutcolorbar=True, vminin=np.min(z), vmaxin=np.max(z))"""
+
+        norm = ImageNormalize(vmin=0., vmax=15)
+        ax2.scatter_density(allxdzs, allxdcolors, color='dimgrey', norm=norm, alpha=0.9)
+        ax2.scatter_density(cxdzs, cxdcolors, color='darkgreen', norm=norm)
+        ax2.scatter_density(redxdzs, redxdcolors, color='darkred', norm=norm)
+        ax2.scatter_density(bluexdzs, bluexdcolors, color='royalblue', norm=norm)
         ax.set_ylim(-0.5, 2)
         ax2.set_ylim(-0.5, 2)
+
 
         ax.title.set_text('eBOSS QSOs')
         ax2.title.set_text('XDQSOz QSOs')
