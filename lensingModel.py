@@ -10,6 +10,8 @@ from scipy.special import j0
 from astropy.io import fits
 import fitting
 import importlib
+import bias_tools
+importlib.reload(bias_tools)
 importlib.reload(fitting)
 
 cosmo = cosmology.setCosmology('planck18')
@@ -44,17 +46,31 @@ def nfw_sigma(theta, m_200, z):
 
 
 # Takes in a redshift and halo mass and returns the convergence predicted at an angle theta due to a NFW halo
-def kappa_1_halo(theta, m_200, z):
+def kappa_1_halo(theta, mass_or_bias, z, mode='mass'):
+	if mode == 'mass':
+		m_200 = mass_or_bias
+	elif mode == 'bias':
+		m_200 = bias_tools.bias_to_mass(mass_or_bias, z)
+	else:
+		return
 	return nfw_sigma(theta, m_200, z)/sigma_crit(z).value
 
 
+
+
+
 # estimate lensing convergence due to correlated large scale structure to a DM halo of a given mass
-def two_halo_term(theta, m_200, z):
+def two_halo_term(theta, mass_or_bias, z, mode='mass'):
 
 	d_a = apcosmo.angular_diameter_distance(z).to(u.kpc/u.littleh, u.with_H0(apcosmo.H0))     # kpc/h
 
-	# calculate halo bias through Tinker+10 model
-	bh = bias.haloBias(M=m_200, z=z, mdef='200c', model='tinker10')
+	if mode == 'mass':
+		# calculate halo bias through Tinker+10 model
+		bh = bias.haloBias(M=mass_or_bias, z=z, mdef='200c', model='tinker10')
+	elif mode == 'bias':
+		bh = mass_or_bias
+	else:
+		return
 
 	# the average (matter) density of the universe
 
@@ -78,27 +94,29 @@ def two_halo_term(theta, m_200, z):
 
 
 # integrate kappa across redshift distribution dn/dz
-def int_kappa(theta, m_200, terms, zdist, zbins=20):
+def int_kappa(theta, mass_or_bias, terms, zdist, zbins=20, mode='mass'):
 
 	# bin up redshift distribution of sample to integrate kappa over
 	hist = np.histogram(zdist, zbins, density=True)
 
 	avg_kappa = []
 	zs = hist[1]
-	# chop off last entry which is a rightmost bound of the z distribution
-	zs = np.resize(zs, zs.size-1)
-
 	dz = zs[1] - zs[0]
+	# chop off last entry which is a rightmost bound of the z distribution
+	zs = np.resize(zs, zs.size-1) + dz/2
+
+
 	dndz = hist[0]
 
 	for i in range(len(dndz)):
 		z = zs[i] + dz/2
 		if terms == 'one':
-			avg_kappa.append(kappa_1_halo(theta, m_200, z)*dndz[i])
+			avg_kappa.append(kappa_1_halo(theta, mass_or_bias, z, mode=mode)*dndz[i])
 		elif terms == 'two':
-			avg_kappa.append(two_halo_term(theta, m_200, z)*dndz[i])
+			avg_kappa.append(two_halo_term(theta, mass_or_bias, z, mode=mode)*dndz[i])
 		elif terms == 'both':
-			avg_kappa.append((kappa_1_halo(theta, m_200, z) + two_halo_term(theta, m_200, z))*dndz[i])
+			avg_kappa.append((kappa_1_halo(theta, mass_or_bias, z, mode=mode) + two_halo_term(theta, mass_or_bias, z,
+			                                            mode=mode))*dndz[i])
 		else:
 			return False
 	avg_kappa = np.array(avg_kappa)
@@ -108,10 +126,10 @@ def int_kappa(theta, m_200, terms, zdist, zbins=20):
 
 # apply same filter applied to the map to the model
 # gaussian with small l modes zeroed
-def filter_model(zdist, m_per_h):
+def filter_model(zdist, mass_or_bias, mode='mass'):
 	theta_list_rad = (np.arange(0.1, 360, 0.1) * u.arcmin).to('rad').value
 
-	bothmodel = int_kappa(theta_list_rad, m_per_h, 'both', zdist)
+	bothmodel = int_kappa(theta_list_rad, mass_or_bias, 'both', zdist, mode=mode)
 	kmodel = hp.beam2bl(bothmodel, theta_list_rad, lmax=4096)
 
 	k_space_filter = hp.gauss_beam((15 * u.arcmin).to('rad').value, lmax=4096)
@@ -122,9 +140,9 @@ def filter_model(zdist, m_per_h):
 	return hp.bl2beam(kconvolved, theta_list_rad)
 
 
-def filtered_model_at_theta(zdist, m_per_h, inputthetas):
+def filtered_model_at_theta(zdist, mass_or_bias, inputthetas, mode='mass'):
 	theta_list = np.arange(0.1, 360, 0.1)
-	model = filter_model(zdist, m_per_h)
+	model = filter_model(zdist, mass_or_bias, mode=mode)
 	flat_thetas = inputthetas.flatten()
 	kappa_vals = []
 	for j in range(len(flat_thetas)):
@@ -141,27 +159,28 @@ def filtered_model_at_theta(zdist, m_per_h, inputthetas):
 
 
 # simulate a stacked map usin
-def model_stacked_map(zdist, m_per_h, imsize=240, reso=1.5):
+def model_stacked_map(zdist, mass_or_bias, imsize=240, reso=1.5, mode='mass'):
 
 	center = imsize/2 - 0.5
 	x_arr, y_arr = np.mgrid[0:imsize, 0:imsize]
 	radii_theta = np.sqrt(((x_arr - center) * reso) ** 2 + ((y_arr - center) * reso) ** 2)
-	model_kappas = filtered_model_at_theta(zdist, m_per_h, radii_theta)
+	model_kappas = filtered_model_at_theta(zdist, mass_or_bias, radii_theta, mode=mode)
 	return model_kappas
 
 
 
 
-def filtered_model_center(zdist, obs_theta, m_per_h, reso=1.5, imsize=240):
+def filtered_model_center(zdist, obs_theta, mass_or_bias, reso=1.5, imsize=240, mode='mass'):
 
-	modelmap = model_stacked_map(zdist, m_per_h, reso=reso, imsize=imsize)
+	modelmap = model_stacked_map(zdist, mass_or_bias, reso=reso, imsize=imsize, mode=mode)
 	return modelmap[int(imsize/2), int(imsize/2)]
 
 
 # calculate average model value in same bins as measured
-def filtered_model_in_bins(zdist, obs_thetas, m_per_h, binsize=12, reso=1.5, imsize=240, maxtheta=180):
+def filtered_model_in_bins(zdist, obs_thetas, mass_or_bias, binsize=12, reso=1.5, imsize=240, maxtheta=180,
+                           mode='mass'):
 
-	modelmap = model_stacked_map(zdist, m_per_h, reso=reso, imsize=imsize)
+	modelmap = model_stacked_map(zdist, mass_or_bias, reso=reso, imsize=imsize, mode=mode)
 
 	profile = fitting.measure_profile(modelmap, binsize, reso, maxtheta=maxtheta)
 	return profile

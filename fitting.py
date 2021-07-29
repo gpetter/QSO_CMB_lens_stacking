@@ -47,16 +47,22 @@ def measure_profile(image, step, reso=1.5, maxtheta=180):
 	return np.array(profile)
 
 
-def fit_best_mass(obs_profile, zdist, p0=6E12, binsize=12, sigma=None, maxtheta=180):
+def fit_best_bias_or_mass(obs_profile, zdist, p0=6E12, binsize=12, sigma=None, maxtheta=180, mode='mass'):
 
 	if sigma is None:
 		sigma = np.ones(len(obs_profile))
 
-	filtered_model_of_mass = partial(lensingModel.filtered_model_in_bins, zdist, binsize=binsize, maxtheta=maxtheta)
+	filtered_model_of_mass = partial(lensingModel.filtered_model_in_bins, zdist, binsize=binsize, maxtheta=maxtheta,
+	                                 mode=mode)
 
 	obs_thetas = np.arange(binsize/2, maxtheta, binsize)
-	popt, pcov = curve_fit(filtered_model_of_mass, obs_thetas, obs_profile, p0=p0, bounds=[10**11, 10**14], sigma=sigma)
-	return np.log10(popt[0])
+
+	if mode == 'mass':
+		popt, pcov = curve_fit(filtered_model_of_mass, obs_thetas, obs_profile, p0=p0, bounds=[10**11, 10**14], sigma=sigma)
+		return np.log10(popt[0])
+	elif mode == 'bias':
+		popt, pcov = curve_fit(filtered_model_of_mass, obs_thetas, obs_profile, p0=2., bounds=[0.5, 5.], sigma=sigma)
+		return popt[0]
 
 
 def fit_mass_to_peak(zdist, peakkappa, stdev=None):
@@ -69,7 +75,7 @@ def fit_mass_to_peak(zdist, peakkappa, stdev=None):
 # use stacks of noise maps to
 def annuli_errs(binsize=12, reso=1.5, maxtheta=180):
 
-	names = sorted(glob.glob('noise_stacks/map*'))
+	names = sorted(glob.glob('stacks/noise_stacks/map*'))
 
 	noise_profiles = []
 	for i in range(len(names)):
@@ -83,11 +89,11 @@ def annuli_errs(binsize=12, reso=1.5, maxtheta=180):
 
 def covariance_matrix(color, mode, binsize=12, reso=1.5, maxtheta=180):
 	if mode == 'bootstrap':
-		names = sorted(glob.glob('bootstacks/*_%s.npy' % color))
+		names = sorted(glob.glob('stacks/bootstacks/*_%s.npy' % color))
 	elif mode == 'noise':
-		names = sorted(glob.glob('noise_stacks/*_%s.npy' % color))
+		names = sorted(glob.glob('stacks/noise_stacks/*_%s.npy' % color))
 	elif mode == 'random':
-		names = sorted(glob.glob('random_stacks/*_%s.npy' % color))
+		names = sorted(glob.glob('stacks/random_stacks/*_%s.npy' % color))
 
 	noise_profiles = []
 	for i in range(len(names)):
@@ -121,7 +127,7 @@ def model_variance_weights(zdist, binsize=12, reso=1.5, imsize=240, maxtheta=180
 	return np.std(models, axis=0)
 
 
-def likelihood_for_mass(observed_profile, covar_mat, zdist, obs_thetas, m_per_h):
+"""def likelihood_for_mass(observed_profile, covar_mat, zdist, obs_thetas, m_per_h):
 
 	filtered_model_of_mass = lensingModel.filtered_model_in_bins(zdist, obs_thetas, m_per_h)
 
@@ -151,11 +157,11 @@ def fit_mc(color, samplename, plot=False, binsize=12, reso=1.5, mode='noise'):
 
 	#likelihood = log_likelihood(kap_profile, filtered_model_of_mass, covar)
 	#result = minimize(partiallike, )
-	#print(result)
+	#print(result)"""
 
 
 
-def fit_mass_suite(color, samplename, plot, binsize=12, reso=1.5, mode='noise'):
+def fit_mass_or_bias_suite(color, samplename, plot, binsize=12, reso=1.5, mode='noise', mass_or_bias_mode='mass'):
 
 
 	# read in the stack of lensing convergence at positions of quasars
@@ -189,28 +195,39 @@ def fit_mass_suite(color, samplename, plot, binsize=12, reso=1.5, mode='noise'):
 	#if use_peak == False:
 	# fit whole profile
 
-	avg_mass = fit_best_mass(kap_profile, zdist, binsize=binsize, sigma=err_profile, maxtheta=maxtheta)
-	print(avg_mass)
+	avg_mass_or_bias = fit_best_bias_or_mass(kap_profile, zdist, binsize=binsize, sigma=err_profile, maxtheta=maxtheta,
+	                                 mode=mass_or_bias_mode)
+	print(avg_mass_or_bias)
 
 	# generate a noiseless stack using the best fit model
-	modelmap = lensingModel.model_stacked_map(zdist, 10**avg_mass, imsize=len(stacked_map), reso=reso)
+	if mass_or_bias_mode == 'mass':
+		modelmap = lensingModel.model_stacked_map(zdist, 10**avg_mass_or_bias, imsize=len(stacked_map), reso=reso)
+		p0 = 10**avg_mass_or_bias
+	elif mass_or_bias_mode == 'bias':
+		modelmap = lensingModel.model_stacked_map(zdist, avg_mass_or_bias, imsize=len(stacked_map), reso=reso,
+		                                          mode='bias')
+		p0 = avg_mass_or_bias
+	else:
+		return
 
 	# to estimate uncertainty on mass, add noise map to the noiseless model and refit many times
-	masses = []
+	masses_or_biases = []
 	profiles = []
 
 	if mode == 'bootstrap':
-		bootnames = sorted(glob.glob('bootstacks/*_%s.npy' % color))
+		bootnames = sorted(glob.glob('stacks/bootstacks/*_%s.npy' % color))
 		#for i in range(len(bootnames)):
 		for i in range(len(bootnames)):
 			bootmap = np.load(bootnames[i], allow_pickle=True)
 			bootprofile = measure_profile(bootmap, binsize, reso=reso, maxtheta=maxtheta)
 			profiles.append(bootprofile)
-			bootmass = fit_best_mass(bootprofile, zdist, p0=10**avg_mass, binsize=binsize, sigma=err_profile, maxtheta=maxtheta)
-			print(bootmass)
-			masses.append(bootmass)
+
+			bootmass_or_bias = fit_best_bias_or_mass(bootprofile, zdist, p0=p0, binsize=binsize, sigma=err_profile,
+			                          maxtheta=maxtheta, mode=mass_or_bias_mode)
+			print(bootmass_or_bias)
+			masses_or_biases.append(bootmass_or_bias)
 	elif mode == 'noise':
-		noisestacknames = sorted(glob.glob('noise_stacks/*_%s.npy' % color))
+		noisestacknames = sorted(glob.glob('stacks/noise_stacks/*_%s.npy' % color))
 
 
 		#for i in range(len(noisestacknames)):
@@ -220,42 +237,38 @@ def fit_mass_suite(color, samplename, plot, binsize=12, reso=1.5, mode='noise'):
 			model_plus_noise = modelmap + noisemap
 			noisyprofile = measure_profile(model_plus_noise, binsize, reso=reso, maxtheta=maxtheta)
 			profiles.append(noisyprofile)
-			noisymass = fit_best_mass(noisyprofile, zdist, p0=10**avg_mass, binsize=binsize, sigma=err_profile, maxtheta=maxtheta)
+			noisymass = fit_best_bias_or_mass(noisyprofile, zdist, p0=p0, binsize=binsize, sigma=err_profile,
+			                                  maxtheta=maxtheta, mode=mass_or_bias_mode)
 			print(noisymass)
-			masses.append(noisymass)
+			masses_or_biases.append(noisymass)
 	elif mode == 'random':
-		randnames = sorted(glob.glob('random_stacks/*_%s.npy' % color))
+		randnames = sorted(glob.glob('stacks/random_stacks/*_%s.npy' % color))
 		for i in range(len(randnames)):
 			randmap = np.load(randnames[i], allow_pickle=True)
 			model_plus_noise = modelmap + randmap
 			noisyprofile = measure_profile(model_plus_noise, binsize, reso=reso)
 			profiles.append(noisyprofile)
-			noisymass = fit_best_mass(noisyprofile, zdist, p0=10 ** avg_mass, binsize=binsize, sigma=err_profile,
-			                          maxtheta=maxtheta)
+			noisymass = fit_best_bias_or_mass(noisyprofile, zdist, p0=p0, binsize=binsize, sigma=err_profile,
+			                          maxtheta=maxtheta, mode=mass_or_bias_mode)
 			print(noisymass)
-			masses.append(noisymass)
-	masses = np.array(masses)
-	highermasses = masses[np.where(masses > avg_mass)]
-	higher_std = np.sqrt(1/(len(highermasses)-1)*np.sum(np.square(highermasses - avg_mass)))
-	lowermasses = masses[np.where(masses < avg_mass)]
-	lower_std = np.sqrt(1/(len(lowermasses)-1)*np.sum(np.square(lowermasses - avg_mass)))
+			masses_or_biases.append(noisymass)
+	masses_or_biases = np.array(masses_or_biases)
+	if mass_or_bias_mode == 'mass':
+		masses = masses_or_biases
+		highermasses = masses[np.where(masses > avg_mass_or_bias)]
+		higher_std = np.sqrt(1/(len(highermasses)-1)*np.sum(np.square(highermasses - avg_mass_or_bias)))
+		lowermasses = masses[np.where(masses < avg_mass_or_bias)]
+		lower_std = np.sqrt(1/(len(lowermasses)-1)*np.sum(np.square(lowermasses - avg_mass_or_bias)))
+		np.array([avg_mass_or_bias, higher_std, lower_std]).dump('masses/%s_%s_mass.npy' % (samplename, color))
+	elif mass_or_bias_mode == 'bias':
+		bias_std = np.std(masses_or_biases)
+		np.array([avg_mass_or_bias, bias_std]).dump('bias/%s/%s.npy' % (samplename, color))
 
-	#print(higherstd, lowerstd)
 
-	kap_errs = np.std(profiles, axis=0)
-	mass_uncertainty = np.std(masses)
-	#np.array([avg_mass, mass_uncertainty]).dump('masses/%s_%s_mass.npy' % (samplename, color))
+	"""kap_errs = np.std(profiles, axis=0)
 
-
-	plt.figure()
-	plt.hist(masses)
-	plt.savefig('plots/masshist.png')
-	plt.close('all')
 
 	if plot:
-		#maxtheta=180
-		#kap_profile = measure_profile(stacked_map, binsize, reso=reso, maxtheta=maxtheta)
-		#kap_errs = np.zeros(len(kap_profile))
 		obs_theta = np.arange(binsize / 2, maxtheta, binsize)
 		theta_range = np.arange(0.5, maxtheta, 0.5)
 		best_mass_profile = lensingModel.filtered_model_at_theta(zdist, 10 ** (avg_mass), theta_range)
@@ -265,7 +278,7 @@ def fit_mass_suite(color, samplename, plot, binsize=12, reso=1.5, mode='noise'):
 		oneterm = lensingModel.int_kappa(theta_range, 10**avg_mass, 'one', zdist)
 		twoterm = lensingModel.int_kappa(theta_range, 10**avg_mass, 'two', zdist)
 		plotting.plot_kappa_profile(color, kap_profile, kap_errs, binsize, maxtheta, best_mass_profile, binned_model, oneterm, twoterm)
-	"""else:
+	else:
 		if do_stack:
 			cat = fits.open('catalogs/derived/%s_%s.fits' % (samplename, color))[1].data
 			ras, decs = cat['RA'], cat['DEC']
@@ -278,7 +291,7 @@ def fit_mass_suite(color, samplename, plot, binsize=12, reso=1.5, mode='noise'):
 		print(peak_k, background_std)
 		avg_mass, higher_std, lower_std = fit_mass_to_peak(zdist, peak_k, stdev=background_std)"""
 
-	np.array([avg_mass, higher_std, lower_std]).dump('masses/%s_%s_mass.npy' % (samplename, color))
+
 
 def fit_mass_to_cutouts(sample_id, color, binsize=12, nbootstraps=0):
 	# read in the stack of lensing convergence at positions of quasars
